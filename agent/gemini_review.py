@@ -22,6 +22,7 @@ gemini_review.py
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -44,11 +45,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "output_dir": "data/review",
     "prompt_path": "agent/prompt.md",
     # Gemini 模型参数
-    "model": "gemini-3.1-pro-preview",
+    "model": "gemini-3.5-flash",
+    "retry_models": ["gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    "max_retries": 3,
+    "retry_base_delay": 10,
     "request_delay": 5,
     "skip_existing": False,
     "suggest_min_score": 4.0,
 }
+
+
+def _load_dotenv(env_path: Path = _ROOT / ".env") -> None:
+    """Load KEY=VALUE lines from .env without overriding existing env vars."""
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _resolve_cfg_path(path_like: str | Path, base_dir: Path = _ROOT) -> Path:
@@ -79,9 +98,10 @@ class GeminiReviewer(BaseReviewer):
     def __init__(self, config):
         super().__init__(config)
         
+        _load_dotenv()
         api_key = os.environ.get("GEMINI_API_KEY", "")
         if not api_key:
-            print("[ERROR] 未找到环境变量 GEMINI_API_KEY，请先设置后重试。", file=sys.stderr)
+            print("[ERROR] 未找到 GEMINI_API_KEY，请设置环境变量或写入项目根目录 .env。", file=sys.stderr)
             sys.exit(1)
             
         self.client = genai.Client(api_key=api_key)
@@ -111,14 +131,42 @@ class GeminiReviewer(BaseReviewer):
             types.Part.from_text(text=user_text),
         ]
 
-        response = self.client.models.generate_content(
-            model=self.config.get("model", "gemini-3.1-pro-preview"),
-            contents=[types.Content(role="user", parts=parts)],
-            config=types.GenerateContentConfig(
-                system_instruction=prompt,
-                temperature=0.2,
-            ),
-        )
+        primary_model = self.config.get("model", "gemini-3.5-flash")
+        retry_models = self.config.get("retry_models") or []
+        models = [primary_model] + [m for m in retry_models if m != primary_model]
+        max_retries = int(self.config.get("max_retries", 3))
+        retry_base_delay = float(self.config.get("retry_base_delay", 10))
+
+        last_error: Exception | None = None
+        response = None
+        for model in models:
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=[types.Content(role="user", parts=parts)],
+                        config=types.GenerateContentConfig(
+                            system_instruction=prompt,
+                            temperature=0.2,
+                        ),
+                    )
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= max_retries:
+                        print(f"\n[WARN] {code} model={model} 连续失败 {attempt} 次，尝试备用模型。")
+                        break
+                    delay = retry_base_delay * (2 ** (attempt - 1))
+                    print(
+                        f"\n[WARN] {code} model={model} 第 {attempt} 次失败，"
+                        f"{delay:.0f}s 后重试：{exc}"
+                    )
+                    time.sleep(delay)
+            if response is not None:
+                break
+
+        if response is None:
+            raise RuntimeError(f"Gemini 调用失败（code={code}）：{last_error}")
 
         response_text = response.text
         if response_text is None:

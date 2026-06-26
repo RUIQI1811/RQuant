@@ -67,8 +67,8 @@ pip install -r requirements.txt
 Windows PowerShell（永久写入）：
 
 ~~~powershell
-[Environment]::SetEnvironmentVariable("TUSHARE_TOKEN", "你的TushareToken", "User")
-[Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "你的GeminiApiKey", "User")
+[Environment]::SetEnvironmentVariable("TUSHARE_TOKEN", "你的Tushare Token", "User")
+[Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "你的Gemini API Key", "User")
 ~~~
 
 写入后请重开终端，环境变量才会在新会话中生效。

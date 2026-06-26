@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from select_stock import run_preselect, resolve_preselect_output_dir
 from schemas import CandidateRun
 from pipeline_io import save_candidates
+from signal_returns import BUY_MODE_SIGNAL_CLOSE, VALID_BUY_MODES, DEFAULT_HORIZONS, run_signal_returns
 
 # ── 日志配置 ─────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -106,6 +107,60 @@ def cmd_preselect(args: argparse.Namespace) -> None:
 # CLI 解析
 # =============================================================================
 
+def _parse_horizons(value: str) -> tuple[int, ...]:
+    horizons = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    if not horizons or any(h <= 0 for h in horizons):
+        raise argparse.ArgumentTypeError("horizons must be positive integers, e.g. 1,5,10")
+    return horizons
+
+
+def _parse_strategies(value: str) -> tuple[str, ...]:
+    strategies = tuple(part.strip().lower() for part in value.split(",") if part.strip())
+    if not strategies:
+        raise argparse.ArgumentTypeError("strategies must be strategy names, e.g. b1 or b1,brick")
+    return strategies
+
+
+def _parse_buy_mode(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in VALID_BUY_MODES:
+        raise argparse.ArgumentTypeError(
+            f"buy mode must be one of {', '.join(sorted(VALID_BUY_MODES))}"
+        )
+    return normalized
+
+
+def cmd_signal_returns(args: argparse.Namespace) -> None:
+    result = run_signal_returns(
+        config_path=args.config or None,
+        data_dir=args.data or None,
+        start_date=args.start or None,
+        end_date=args.end or None,
+        output_dir=args.output or None,
+        horizons=args.horizons,
+        strategies=args.strategies,
+        buy_mode=args.buy_mode,
+    )
+
+    summary = result["summary"]
+    print("\nSignal return summary")
+    print(f"signals: {summary['total_signals']}")
+    for key, metrics in summary["metrics"].items():
+        mean = metrics["mean_return"]
+        median = metrics["median_return"]
+        win_rate = metrics["win_rate"]
+        if mean is None or median is None or win_rate is None:
+            print(f"{key}: count=0")
+        else:
+            print(
+                f"{key}: count={metrics['count']} "
+                f"mean={mean:.4%} median={median:.4%} win_rate={win_rate:.2%}"
+            )
+    print(f"csv: {result['csv_path']}")
+    print(f"summary: {result['summary_path']}")
+    print(f"summary_csv: {result['summary_csv_path']}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pipeline.cli",
@@ -123,6 +178,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log-dir", dest="log_dir", default=None,
                    help="流水日志目录（默认 data/logs/）")
 
+    p = sub.add_parser("signal-returns", help="Evaluate future returns after selector signals")
+    p.add_argument("--config", default=None, help="rules_preselect.yaml path")
+    p.add_argument("--data", default=None, help="CSV data directory")
+    p.add_argument("--start", default=None, help="Start signal date YYYY-MM-DD")
+    p.add_argument("--end", default=None, help="End signal date YYYY-MM-DD")
+    p.add_argument("--output", default=None, help="Output directory, default data/backtest")
+    p.add_argument(
+        "--horizons",
+        type=_parse_horizons,
+        default=DEFAULT_HORIZONS,
+        help="Comma-separated holding horizons, default 1,5,10",
+    )
+    p.add_argument(
+        "--strategies",
+        type=_parse_strategies,
+        default=None,
+        help="Comma-separated strategies to backtest, e.g. b1, brick, or b1,brick",
+    )
+    p.add_argument(
+        "--buy-mode",
+        type=_parse_buy_mode,
+        default=BUY_MODE_SIGNAL_CLOSE,
+        help="Entry price mode: signal_close or next_open",
+    )
+
     return parser
 
 
@@ -132,6 +212,8 @@ def main() -> None:
 
     if args.command == "preselect":
         cmd_preselect(args)
+    elif args.command == "signal-returns":
+        cmd_signal_returns(args)
     else:
         parser.print_help()
         sys.exit(1)

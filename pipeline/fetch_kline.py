@@ -57,6 +57,20 @@ _pd.Series.fillna = _patched_series_fillna  # type: ignore[method-assign]
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_LOG_DIR = _PROJECT_ROOT / "data" / "logs"
 
+def _load_dotenv(env_path: Path = _PROJECT_ROOT / ".env") -> None:
+    """Load KEY=VALUE lines from .env without overriding existing env vars."""
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
 def _resolve_cfg_path(path_like: str | Path, base_dir: Path = _PROJECT_ROOT) -> Path:
     """将配置中的路径统一解析为绝对路径：相对路径基于项目根目录。"""
     p = Path(path_like)
@@ -246,12 +260,12 @@ def main(log_path: Optional[Path] = None):
     # ---------- Tushare Token ---------- #
     os.environ["NO_PROXY"] = "api.waditu.com,.waditu.com,waditu.com"
     os.environ["no_proxy"] = os.environ["NO_PROXY"]
+    _load_dotenv()
     ts_token = os.environ.get("TUSHARE_TOKEN")
     if not ts_token:
-        raise ValueError("请先设置环境变量 TUSHARE_TOKEN，例如：export TUSHARE_TOKEN=你的token")
-    ts.set_token(ts_token)
+        raise ValueError("请先设置环境变量 TUSHARE_TOKEN，或在项目根目录 .env 中写入 TUSHARE_TOKEN=你的token")
     global pro
-    pro = ts.pro_api()
+    pro = ts.pro_api(ts_token)
 
     # ---------- 日期解析 ---------- #
     raw_start = str(cfg.get("start", "20190101"))

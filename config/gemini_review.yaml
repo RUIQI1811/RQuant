@@ -14,7 +14,18 @@ output_dir: data/review
 prompt_path: agent/prompt.md
 
 # Gemini 模型名称
-model: gemini-3.1-pro-preview
+model: gemini-2.5-flash-lite
+
+# 主模型繁忙或临时不可用时，依次尝试这些备用模型
+retry_models:
+  - gemini-2.5-flash
+  - gemini-2.5-flash-lite
+
+# 单个模型每只股票最多重试次数
+max_retries: 3
+
+# 重试等待基准秒数，实际等待为 base、2*base、4*base...
+retry_base_delay: 10
 
 # 相邻 API 调用间隔（秒）
 request_delay: 5

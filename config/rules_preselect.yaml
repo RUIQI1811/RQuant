@@ -12,7 +12,7 @@ global:
 
 # ── B1 策略参数（KDJ + 知行均线多头排列） ────────────────────────────
 b1:
-  enabled: true
+  enabled: false
   zx_m1: 14
   zx_m2: 28
   zx_m3: 57
@@ -22,7 +22,7 @@ b1:
 
 # ── 砖型图（BrickChart）策略参数 ──────────────────────────────────────
 brick:
-  enabled: false
+  enabled: true
 
   # 砖型图计算参数
   n: 8

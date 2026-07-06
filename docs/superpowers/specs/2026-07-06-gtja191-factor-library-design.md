@@ -103,6 +103,28 @@ one factor at a time, write its FactorTester output atomically, update status
 after every factor, isolate failures, support `--force`, `--fail-fast`, include
 ranges, exclude ranges, and lifecycle filtering.
 
+The same script must also provide one-command evaluation of the complete 191
+factor family. This command selects every GTJA factor regardless of later
+lifecycle settings:
+
+```bash
+/opt/miniconda3/envs/stocktrade/bin/python scripts/test_gtja191_batch.py \
+  --data data/raw \
+  --factors all \
+  --ignore-factor-config \
+  --windows 1 5 10 20 \
+  --groups 10 \
+  --output factor_report/gtja191_batch
+```
+
+`--factors` defaults to `all`, while `--ignore-factor-config` guarantees that
+disabled or not-yet-scored factors are not omitted from a deliberate full
+library evaluation. The runner builds aligned raw panels and reusable forward
+returns once, then evaluates all selected formulas sequentially so it does not
+hold 191 factor panels in memory. `batch_status.csv` contains one row for every
+requested factor with `success`, `missing_input`, `formula_error`, `failed`, or
+`skipped` status; therefore a full run cannot silently omit a factor.
+
 Durable outputs are separate from Alpha101:
 
 ```text
@@ -230,6 +252,9 @@ inside the existing factor track. No custom-strategy documentation changes.
   versus tradable NAV separation.
 - Single-factor and resumable batch CLIs produce auditable outputs at the
   documented paths.
+- One `scripts/test_gtja191_batch.py --factors all --ignore-factor-config`
+  command evaluates all 191 registered factors through the same FactorTester
+  settings and records one terminal status row per factor.
 - Focused GTJA, FactorTester, CLI, batch, and Alpha101 regression tests pass.
 - README and architecture documentation match actual commands and behavior.
 - No secrets, user market data, or unrelated working-tree changes are included.

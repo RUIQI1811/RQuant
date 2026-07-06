@@ -31,6 +31,7 @@ from .alpha101 import (
     ts_min,
     ts_rank,
     ts_sum,
+    build_alpha101_panels,
 )
 
 
@@ -1324,3 +1325,91 @@ class GTJA191:
 
     def gtja_191(self) -> Panel:
         return correlation(mean(self.d.volume, 20), self.d.low, 5) + (self.d.high + self.d.low) / 2 - self.d.close
+
+
+def _external_series(frame: pd.DataFrame | None, column: str) -> pd.Series | None:
+    if frame is None or frame.empty:
+        return None
+    normalized = frame.copy()
+    normalized.columns = [str(value).lower() for value in normalized.columns]
+    if "date" not in normalized.columns or column not in normalized.columns:
+        return None
+    values = pd.to_numeric(normalized[column], errors="coerce")
+    return pd.Series(values.to_numpy(), index=pd.to_datetime(normalized["date"])).groupby(level=0).last()
+
+
+def build_gtja191_panels(
+    raw_data: dict[str, pd.DataFrame],
+    *,
+    metadata: pd.DataFrame | dict | None = None,
+    benchmark_data: pd.DataFrame | None = None,
+    style_factor_data: pd.DataFrame | None = None,
+) -> GTJA191Panels:
+    """Build aligned GTJA panels from repository per-symbol raw frames."""
+
+    base = build_alpha101_panels(raw_data, metadata=metadata)
+    if base.turnover_value is None:
+        amount = base.close * base.volume
+    else:
+        amount = base.turnover_value
+    external = GTJA191ExternalData(
+        benchmark_open=_external_series(benchmark_data, "open"),
+        benchmark_close=_external_series(benchmark_data, "close"),
+        mkt=_external_series(style_factor_data, "mkt"),
+        smb=_external_series(style_factor_data, "smb"),
+        hml=_external_series(style_factor_data, "hml"),
+    )
+    return GTJA191Panels(
+        open=base.open,
+        close=base.close,
+        high=base.high,
+        low=base.low,
+        volume=base.volume,
+        amount=amount,
+        vwap=base.vwap,
+        returns=base.returns,
+        external=external,
+        market_cap=base.cap,
+        is_st=base.is_st,
+        industry=base.industry,
+    )
+
+
+def gtja191_to_long(
+    raw_data: dict[str, pd.DataFrame],
+    factor_name: str | int,
+    *,
+    metadata: pd.DataFrame | dict | None = None,
+    benchmark_data: pd.DataFrame | None = None,
+    style_factor_data: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Calculate one GTJA factor and return FactorTester's long schema."""
+
+    panels = build_gtja191_panels(
+        raw_data,
+        metadata=metadata,
+        benchmark_data=benchmark_data,
+        style_factor_data=style_factor_data,
+    )
+    values = GTJA191(panels).calculate(factor_name)
+
+    def stacked(value: Panel, name: str) -> pd.Series:
+        return value.rename_axis(index="date", columns="symbol").stack(future_stack=True).rename(name)
+
+    parts = [
+        stacked(values, "factor_value"),
+        stacked(panels.close, "close"),
+        stacked(panels.volume, "volume"),
+        stacked(panels.returns, "daily_return"),
+        stacked(panels.close.notna().cumsum(), "listing_age_days"),
+        stacked(panels.amount, "turnover_value"),
+    ]
+    if panels.industry is not None:
+        parts.append(stacked(panels.industry, "industry"))
+    if panels.market_cap is not None:
+        parts.append(stacked(panels.market_cap, "market_cap"))
+    if panels.is_st is not None:
+        parts.append(stacked(panels.is_st, "is_st"))
+    result = pd.concat(parts, axis=1).reset_index()
+    result["symbol"] = result["symbol"].astype(str).str.zfill(6)
+    return result

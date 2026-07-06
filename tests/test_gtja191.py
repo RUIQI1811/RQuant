@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -13,10 +14,12 @@ from pipeline.factors.gtja191 import (  # noqa: E402
     GTJA191_NAMES,
     GTJA191ExternalData,
     GTJA191Panels,
+    build_gtja191_panels,
     count,
     highday,
     lowday,
     normalize_gtja_name,
+    gtja191_to_long,
     regbeta,
     regresi,
     sma_cn,
@@ -30,6 +33,7 @@ from pipeline.factors.alpha101 import (  # noqa: E402
     rank,
     stddev,
 )
+from pipeline.factor_tester import build_long_factor_frame_from_raw  # noqa: E402
 
 
 def _complete_panels(days: int = 320, symbols: int = 6) -> GTJA191Panels:
@@ -80,6 +84,25 @@ def _complete_panels(days: int = 320, symbols: int = 6) -> GTJA191Panels:
         returns=returns,
         external=external,
     )
+
+
+def _raw_symbol_frames(days: int = 40, symbols: int = 2) -> dict[str, pd.DataFrame]:
+    dates = pd.date_range("2025-01-01", periods=days, freq="B")
+    output = {}
+    for number in range(1, symbols + 1):
+        close = np.arange(days, dtype=float) + 10 + number
+        output[f"{number:06d}"] = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close - 0.2,
+                "close": close,
+                "high": close + 0.5,
+                "low": close - 0.5,
+                "volume": np.arange(days, dtype=float) + 1000,
+                "amount": (np.arange(days, dtype=float) + 1000) * close / 1000,
+            }
+        )
+    return output
 
 
 class GTJA191OperatorsTest(unittest.TestCase):
@@ -261,6 +284,39 @@ class GTJA191CompleteLibraryTest(unittest.TestCase):
                 result = self.calculator.calculate(name)
                 self.assertEqual(result.index.tolist(), self.panels.close.index.tolist())
                 self.assertEqual(result.columns.tolist(), self.panels.close.columns.tolist())
+
+
+class GTJA191RawAdapterTest(unittest.TestCase):
+    def test_single_factor_script_lists_gtja_family(self):
+        result = subprocess.run(
+            [sys.executable, "scripts/test_factor.py", "--list-factors"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        names = result.stdout.splitlines()
+        self.assertIn("gtja_001", names)
+        self.assertIn("gtja_191", names)
+
+    def test_public_factor_package_exports_gtja_registry(self):
+        from pipeline.factors import GTJA191_NAMES as exported_names
+
+        self.assertEqual(exported_names, GTJA191_NAMES)
+
+    def test_raw_adapter_builds_amount_and_typical_vwap(self):
+        panels = build_gtja191_panels(_raw_symbol_frames())
+        expected_vwap = (panels.high + panels.low + panels.close) / 3.0
+        pd.testing.assert_frame_equal(panels.vwap, expected_vwap)
+        self.assertEqual(panels.close.columns.tolist(), ["000001", "000002"])
+
+    def test_long_adapter_routes_through_factor_tester(self):
+        raw = _raw_symbol_frames()
+        direct = gtja191_to_long(raw, "gtja_015")
+        routed = build_long_factor_frame_from_raw(raw, factor_name="gtja_015")
+        self.assertEqual(direct["symbol"].str.len().unique().tolist(), [6])
+        self.assertIn("turnover_value", direct.columns)
+        pd.testing.assert_frame_equal(direct, routed)
 
 
 if __name__ == "__main__":

@@ -239,5 +239,29 @@ class GTJA191MiddleEightyTest(unittest.TestCase):
                 self.assertEqual(result.shape, self.panels.close.shape)
 
 
+class GTJA191CompleteLibraryTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.panels = _complete_panels(days=420)
+        cls.calculator = GTJA191(cls.panels)
+
+    def test_gtja_168_is_negative_relative_volume(self):
+        expected = -self.panels.volume / self.panels.volume.rolling(20).mean()
+        pd.testing.assert_frame_equal(self.calculator.calculate(168), expected)
+
+    def test_gtja_191_matches_formula(self):
+        expected = correlation(self.panels.volume.rolling(20).mean(), self.panels.low, 5)
+        expected = expected + (self.panels.high + self.panels.low) / 2.0
+        expected = expected - self.panels.close
+        pd.testing.assert_frame_equal(self.calculator.calculate(191), expected)
+
+    def test_all_191_factors_are_callable_and_aligned(self):
+        for name in GTJA191_NAMES:
+            with self.subTest(name=name):
+                result = self.calculator.calculate(name)
+                self.assertEqual(result.index.tolist(), self.panels.close.index.tolist())
+                self.assertEqual(result.columns.tolist(), self.panels.close.columns.tolist())
+
+
 if __name__ == "__main__":
     unittest.main()

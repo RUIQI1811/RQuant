@@ -2,11 +2,14 @@ import sys
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.factors.gtja191 import (  # noqa: E402
+    GTJA191,
+    GTJA191_NAMES,
     GTJA191ExternalData,
     GTJA191Panels,
     count,
@@ -19,6 +22,63 @@ from pipeline.factors.gtja191 import (  # noqa: E402
     sumif,
     wma,
 )
+from pipeline.factors.alpha101 import (  # noqa: E402
+    correlation,
+    delay,
+    delta,
+    rank,
+    stddev,
+)
+
+
+def _complete_panels(days: int = 320, symbols: int = 6) -> GTJA191Panels:
+    dates = pd.date_range("2024-01-01", periods=days, freq="B")
+    columns = [f"{number:06d}" for number in range(1, symbols + 1)]
+    rng = np.random.default_rng(20260706)
+    close = pd.DataFrame(
+        20 + rng.normal(0, 0.2, (days, symbols)).cumsum(axis=0),
+        index=dates,
+        columns=columns,
+    )
+    open_ = close * (1 + rng.normal(0, 0.01, close.shape))
+    high = pd.DataFrame(
+        np.maximum(open_, close) * (1 + rng.random(close.shape) * 0.02),
+        index=dates,
+        columns=columns,
+    )
+    low = pd.DataFrame(
+        np.minimum(open_, close) * (1 - rng.random(close.shape) * 0.02),
+        index=dates,
+        columns=columns,
+    )
+    volume = pd.DataFrame(
+        rng.lognormal(12, 0.4, close.shape),
+        index=dates,
+        columns=columns,
+    )
+    returns = close.pct_change(fill_method=None)
+    external = GTJA191ExternalData(
+        benchmark_open=pd.Series(
+            3000 + rng.normal(0, 5, days).cumsum(), index=dates
+        ),
+        benchmark_close=pd.Series(
+            3000 + rng.normal(0, 5, days).cumsum(), index=dates
+        ),
+        mkt=pd.Series(rng.normal(0, 0.01, days), index=dates),
+        smb=pd.Series(rng.normal(0, 0.01, days), index=dates),
+        hml=pd.Series(rng.normal(0, 0.01, days), index=dates),
+    )
+    return GTJA191Panels(
+        open=open_,
+        close=close,
+        high=high,
+        low=low,
+        volume=volume,
+        amount=close * volume,
+        vwap=(high + low + close) / 3.0,
+        returns=returns,
+        external=external,
+    )
 
 
 class GTJA191OperatorsTest(unittest.TestCase):
@@ -89,6 +149,50 @@ class GTJA191PanelsTest(unittest.TestCase):
         )
         self.assertEqual(panels.close.columns.tolist(), ["000001", "000002"])
         self.assertEqual(panels.external, GTJA191ExternalData())
+
+
+class GTJA191FirstEightyTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.panels = _complete_panels()
+        cls.calculator = GTJA191(cls.panels)
+
+    def test_registry_contains_all_191_names(self):
+        self.assertEqual(len(GTJA191_NAMES), 191)
+        self.assertEqual(GTJA191_NAMES[0], "gtja_001")
+        self.assertEqual(GTJA191_NAMES[-1], "gtja_191")
+
+    def test_gtja_001_matches_formula(self):
+        expected = -correlation(
+            rank(delta(np.log(self.panels.volume), 1)),
+            rank((self.panels.close - self.panels.open) / self.panels.open),
+            6,
+        )
+        pd.testing.assert_frame_equal(self.calculator.calculate(1), expected)
+
+    def test_gtja_015_matches_open_gap(self):
+        expected = self.panels.open / delay(self.panels.close, 1) - 1.0
+        pd.testing.assert_frame_equal(self.calculator.calculate(15), expected)
+
+    def test_gtja_070_is_amount_volatility(self):
+        pd.testing.assert_frame_equal(
+            self.calculator.calculate(70),
+            stddev(self.panels.amount, 6),
+        )
+
+    def test_gtja_080_is_five_day_volume_change_percent(self):
+        expected = (
+            (self.panels.volume - delay(self.panels.volume, 5))
+            / delay(self.panels.volume, 5)
+            * 100.0
+        )
+        pd.testing.assert_frame_equal(self.calculator.calculate(80), expected)
+
+    def test_first_eighty_return_aligned_panels(self):
+        for number in range(1, 81):
+            with self.subTest(number=number):
+                result = self.calculator.calculate(number)
+                self.assertEqual(result.shape, self.panels.close.shape)
 
 
 if __name__ == "__main__":

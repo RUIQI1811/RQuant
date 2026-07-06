@@ -87,6 +87,14 @@ class GTJA191Panels:
     is_st: Panel | None = None
     industry: Panel | None = None
 
+    @property
+    def turnover_value(self) -> Panel:
+        return self.amount
+
+    @property
+    def cap(self) -> Panel | None:
+        return self.market_cap
+
 
 def _window(value: int | float) -> int:
     return max(1, int(np.floor(float(value) + 0.5)))

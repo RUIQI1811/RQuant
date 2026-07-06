@@ -832,3 +832,342 @@ class GTJA191:
     def gtja_080(self) -> Panel:
         previous = delay(self.d.volume, 5)
         return _safe_div(self.d.volume - previous, previous) * 100.0
+
+    def gtja_081(self) -> Panel:
+        return sma_cn(self.d.volume, 21, 2)
+
+    def gtja_082(self) -> Panel:
+        value = _safe_div(ts_max(self.d.high, 6) - self.d.close, ts_max(self.d.high, 6) - ts_min(self.d.low, 6)) * 100
+        return sma_cn(value, 20, 1)
+
+    def gtja_083(self) -> Panel:
+        return -rank(covariance(rank(self.d.high), rank(self.d.volume), 5))
+
+    def gtja_084(self) -> Panel:
+        return ts_sum(self._signed_volume(), 20)
+
+    def gtja_085(self) -> Panel:
+        return ts_rank(_safe_div(self.d.volume, mean(self.d.volume, 20)), 20) * ts_rank(-delta(self.d.close, 7), 8)
+
+    def gtja_086(self) -> Panel:
+        slope = (delay(self.d.close, 20) - delay(self.d.close, 10)) / 10 - (delay(self.d.close, 10) - self.d.close) / 10
+        middle = -(self.d.close - delay(self.d.close, 1))
+        result = middle.where(slope >= 0, 1.0)
+        return result.where(slope <= 0.25, -1.0).where(slope.notna())
+
+    def gtja_087(self) -> Panel:
+        first = rank(decay_linear(delta(self.d.vwap, 4), 7))
+        second_input = _safe_div(self.d.low - self.d.vwap, self.d.open - (self.d.high + self.d.low) / 2)
+        return -(first + ts_rank(decay_linear(second_input, 11), 7))
+
+    def gtja_088(self) -> Panel:
+        previous = delay(self.d.close, 20)
+        return _safe_div(self.d.close - previous, previous) * 100
+
+    def gtja_089(self) -> Panel:
+        difference = sma_cn(self.d.close, 13, 2) - sma_cn(self.d.close, 27, 2)
+        return 2 * (difference - sma_cn(difference, 10, 2))
+
+    def gtja_090(self) -> Panel:
+        return -rank(correlation(rank(self.d.vwap), rank(self.d.volume), 5))
+
+    def gtja_091(self) -> Panel:
+        return -rank(self.d.close - ts_max(self.d.close, 5)) * rank(correlation(mean(self.d.volume, 40), self.d.low, 5))
+
+    def gtja_092(self) -> Panel:
+        left = rank(decay_linear(delta(self.d.close * .35 + self.d.vwap * .65, 2), 3))
+        right = ts_rank(decay_linear(correlation(mean(self.d.volume, 180), self.d.close, 13).abs(), 5), 15)
+        return -element_max(left, right)
+
+    def gtja_093(self) -> Panel:
+        previous = delay(self.d.open, 1)
+        value = element_max(self.d.open - self.d.low, self.d.open - previous)
+        return ts_sum(value.where(self.d.open < previous, 0.0), 20)
+
+    def gtja_094(self) -> Panel:
+        return ts_sum(self._signed_volume(), 30)
+
+    def gtja_095(self) -> Panel:
+        return stddev(self.d.amount, 20)
+
+    def gtja_096(self) -> Panel:
+        stochastic = _safe_div(self.d.close - ts_min(self.d.low, 9), ts_max(self.d.high, 9) - ts_min(self.d.low, 9)) * 100
+        return sma_cn(sma_cn(stochastic, 3, 1), 3, 1)
+
+    def gtja_097(self) -> Panel:
+        return stddev(self.d.volume, 10)
+
+    def gtja_098(self) -> Panel:
+        average = mean(self.d.close, 100)
+        slope = _safe_div(delta(average, 100), delay(self.d.close, 100))
+        return (-(self.d.close - ts_min(self.d.close, 100))).where(slope <= .05, -delta(self.d.close, 3))
+
+    def gtja_099(self) -> Panel:
+        return -rank(covariance(rank(self.d.close), rank(self.d.volume), 5))
+
+    def gtja_100(self) -> Panel:
+        return stddev(self.d.volume, 20)
+
+    def gtja_101(self) -> Panel:
+        left = rank(correlation(self.d.close, ts_sum(mean(self.d.volume, 30), 37), 15))
+        right = rank(correlation(rank(self.d.high * .1 + self.d.vwap * .9), rank(self.d.volume), 11))
+        return _conditional(left < right, -1.0, 0.0, valid=left.notna() & right.notna())
+
+    def gtja_102(self) -> Panel:
+        change = self.d.volume - delay(self.d.volume, 1)
+        return _safe_div(sma_cn(change.clip(lower=0), 6, 1), sma_cn(change.abs(), 6, 1)) * 100
+
+    def gtja_103(self) -> Panel:
+        return (20 - lowday(self.d.low, 20)) / 20 * 100
+
+    def gtja_104(self) -> Panel:
+        return -delta(correlation(self.d.high, self.d.volume, 5), 5) * rank(stddev(self.d.close, 20))
+
+    def gtja_105(self) -> Panel:
+        return -correlation(rank(self.d.open), rank(self.d.volume), 10)
+
+    def gtja_106(self) -> Panel:
+        return self.d.close - delay(self.d.close, 20)
+
+    def gtja_107(self) -> Panel:
+        return -rank(self.d.open - delay(self.d.high, 1)) * rank(self.d.open - delay(self.d.close, 1)) * rank(self.d.open - delay(self.d.low, 1))
+
+    def gtja_108(self) -> Panel:
+        base = rank(self.d.high - ts_min(self.d.high, 2))
+        exponent = rank(correlation(self.d.vwap, mean(self.d.volume, 120), 6))
+        return -np.power(base, exponent)
+
+    def gtja_109(self) -> Panel:
+        first = sma_cn(self.d.high - self.d.low, 10, 2)
+        return _safe_div(first, sma_cn(first, 10, 2))
+
+    def gtja_110(self) -> Panel:
+        previous = delay(self.d.close, 1)
+        numerator = ts_sum((self.d.high - previous).clip(lower=0), 20)
+        denominator = ts_sum((previous - self.d.low).clip(lower=0), 20)
+        return _safe_div(numerator, denominator) * 100
+
+    def gtja_111(self) -> Panel:
+        raw = _safe_div(((self.d.close - self.d.low) - (self.d.high - self.d.close)) * self.d.volume, self.d.high - self.d.low)
+        return sma_cn(raw, 11, 2) - sma_cn(raw, 4, 2)
+
+    def gtja_112(self) -> Panel:
+        change = self.d.close - delay(self.d.close, 1)
+        positive = ts_sum(change.clip(lower=0), 12)
+        negative = ts_sum((-change).clip(lower=0), 12)
+        return _safe_div(positive - negative, positive + negative) * 100
+
+    def gtja_113(self) -> Panel:
+        return -rank(mean(delay(self.d.close, 5), 20)) * correlation(self.d.close, self.d.volume, 2) * rank(correlation(ts_sum(self.d.close, 5), ts_sum(self.d.close, 20), 2))
+
+    def gtja_114(self) -> Panel:
+        ratio = _safe_div(self.d.high - self.d.low, mean(self.d.close, 5))
+        return _safe_div(rank(delay(ratio, 2)) * rank(rank(self.d.volume)), _safe_div(ratio, self.d.vwap - self.d.close))
+
+    def gtja_115(self) -> Panel:
+        base = rank(correlation(self.d.high * .9 + self.d.close * .1, mean(self.d.volume, 30), 10))
+        exponent = rank(correlation(ts_rank((self.d.high + self.d.low) / 2, 4), ts_rank(self.d.volume, 10), 7))
+        return np.power(base, exponent)
+
+    def gtja_116(self) -> Panel:
+        return _sequence_regbeta(self.d.close, 20)
+
+    def gtja_117(self) -> Panel:
+        return ts_rank(self.d.volume, 32) * (1 - ts_rank(self.d.close + self.d.high - self.d.low, 16)) * (1 - ts_rank(self.d.returns, 32))
+
+    def gtja_118(self) -> Panel:
+        return _safe_div(ts_sum(self.d.high - self.d.open, 20), ts_sum(self.d.open - self.d.low, 20)) * 100
+
+    def gtja_119(self) -> Panel:
+        left = rank(decay_linear(correlation(self.d.vwap, ts_sum(mean(self.d.volume, 5), 26), 5), 7))
+        inner = ts_min(correlation(rank(self.d.open), rank(mean(self.d.volume, 15)), 21), 9)
+        right = rank(decay_linear(ts_rank(inner, 7), 8))
+        return left - right
+
+    def gtja_120(self) -> Panel:
+        return _safe_div(rank(self.d.vwap - self.d.close), rank(self.d.vwap + self.d.close))
+
+    def gtja_121(self) -> Panel:
+        base = rank(self.d.vwap - ts_min(self.d.vwap, 12))
+        exponent = ts_rank(correlation(ts_rank(self.d.vwap, 20), ts_rank(mean(self.d.volume, 60), 2), 18), 3)
+        return -np.power(base, exponent)
+
+    def gtja_122(self) -> Panel:
+        smoothed = sma_cn(sma_cn(sma_cn(np.log(self.d.close), 13, 2), 13, 2), 13, 2)
+        return _safe_div(smoothed - delay(smoothed, 1), delay(smoothed, 1))
+
+    def gtja_123(self) -> Panel:
+        left = rank(correlation(ts_sum((self.d.high + self.d.low) / 2, 20), ts_sum(mean(self.d.volume, 60), 20), 9))
+        right = rank(correlation(self.d.low, self.d.volume, 6))
+        return _conditional(left < right, -1.0, 0.0, valid=left.notna() & right.notna())
+
+    def gtja_124(self) -> Panel:
+        return _safe_div(self.d.close - self.d.vwap, decay_linear(rank(ts_max(self.d.close, 30)), 2))
+
+    def gtja_125(self) -> Panel:
+        numerator = rank(decay_linear(correlation(self.d.vwap, mean(self.d.volume, 80), 17), 20))
+        denominator = rank(decay_linear(delta(self.d.close * .5 + self.d.vwap * .5, 3), 16))
+        return _safe_div(numerator, denominator)
+
+    def gtja_126(self) -> Panel:
+        return (self.d.close + self.d.high + self.d.low) / 3
+
+    def gtja_127(self) -> Panel:
+        maximum = ts_max(self.d.close, 12)
+        ratio = _safe_div(100 * (self.d.close - maximum), maximum)
+        return np.sqrt(mean(ratio.pow(2), 12))
+
+    def gtja_128(self) -> Panel:
+        typical = (self.d.high + self.d.low + self.d.close) / 3
+        previous = delay(typical, 1)
+        up = ts_sum((typical * self.d.volume).where(typical > previous, 0.0), 14)
+        down = ts_sum((typical * self.d.volume).where(typical < previous, 0.0), 14)
+        return 100 - _safe_div(pd.DataFrame(100.0, index=up.index, columns=up.columns), 1 + _safe_div(up, down))
+
+    def gtja_129(self) -> Panel:
+        change = self.d.close - delay(self.d.close, 1)
+        return ts_sum((-change).where(change < 0, 0.0), 12)
+
+    def gtja_130(self) -> Panel:
+        numerator = rank(decay_linear(correlation((self.d.high + self.d.low) / 2, mean(self.d.volume, 40), 9), 10))
+        denominator = rank(decay_linear(correlation(rank(self.d.vwap), rank(self.d.volume), 7), 3))
+        return _safe_div(numerator, denominator)
+
+    def gtja_131(self) -> Panel:
+        base = rank(delta(self.d.vwap, 1))
+        exponent = ts_rank(correlation(self.d.close, mean(self.d.volume, 50), 18), 18)
+        return np.power(base, exponent)
+
+    def gtja_132(self) -> Panel:
+        return mean(self.d.amount, 20)
+
+    def gtja_133(self) -> Panel:
+        return (20 - highday(self.d.high, 20)) / 20 * 100 - (20 - lowday(self.d.low, 20)) / 20 * 100
+
+    def gtja_134(self) -> Panel:
+        previous = delay(self.d.close, 12)
+        return _safe_div(self.d.close - previous, previous) * self.d.volume
+
+    def gtja_135(self) -> Panel:
+        return sma_cn(delay(_safe_div(self.d.close, delay(self.d.close, 20)), 1), 20, 1)
+
+    def gtja_136(self) -> Panel:
+        return -rank(delta(self.d.returns, 3)) * correlation(self.d.open, self.d.volume, 10)
+
+    def gtja_137(self) -> Panel:
+        previous_close = delay(self.d.close, 1); previous_open = delay(self.d.open, 1); previous_low = delay(self.d.low, 1)
+        a = (self.d.high - previous_close).abs(); b = (self.d.low - previous_close).abs(); c = (self.d.high - previous_low).abs(); d = (previous_close - previous_open).abs()
+        denominator = (c + d / 4).where(~((b > c) & (b > a)), b + a / 2 + d / 4)
+        denominator = denominator.where(~((a > b) & (a > c)), a + b / 2 + d / 4)
+        numerator = 16 * (self.d.close - previous_close + (self.d.close - self.d.open) / 2 + previous_close - previous_open)
+        return _safe_div(numerator, denominator) * element_max(a, b)
+
+    def gtja_138(self) -> Panel:
+        left = rank(decay_linear(delta(self.d.low * .7 + self.d.vwap * .3, 3), 20))
+        inner = correlation(ts_rank(self.d.low, 8), ts_rank(mean(self.d.volume, 60), 17), 5)
+        right = ts_rank(decay_linear(ts_rank(inner, 19), 16), 7)
+        return -(left - right)
+
+    def gtja_139(self) -> Panel:
+        return -correlation(self.d.open, self.d.volume, 10)
+
+    def gtja_140(self) -> Panel:
+        left = rank(decay_linear((rank(self.d.open) + rank(self.d.low)) - (rank(self.d.high) + rank(self.d.close)), 8))
+        right = ts_rank(decay_linear(correlation(ts_rank(self.d.close, 8), ts_rank(mean(self.d.volume, 60), 20), 8), 7), 3)
+        return element_min(left, right)
+
+    def gtja_141(self) -> Panel:
+        return -rank(correlation(rank(self.d.high), rank(mean(self.d.volume, 15)), 9))
+
+    def gtja_142(self) -> Panel:
+        return -rank(ts_rank(self.d.close, 10)) * rank(delta(delta(self.d.close, 1), 1)) * rank(ts_rank(_safe_div(self.d.volume, mean(self.d.volume, 20)), 5))
+
+    def gtja_143(self) -> Panel:
+        output = pd.DataFrame(np.nan, index=self.d.close.index, columns=self.d.close.columns)
+        returns = _safe_div(self.d.close - delay(self.d.close, 1), delay(self.d.close, 1))
+        for column_index, column in enumerate(output.columns):
+            previous = 1.0
+            for row_index in range(len(output)):
+                value = returns.iat[row_index, column_index]
+                if pd.notna(value) and value > 0:
+                    previous *= 1 + float(value)
+                output.iat[row_index, column_index] = previous
+        return output
+
+    def gtja_144(self) -> Panel:
+        value = _safe_div(self.d.returns.abs(), self.d.amount)
+        condition = self.d.close < delay(self.d.close, 1)
+        return _safe_div(sumif(value, 20, condition), count(condition, 20))
+
+    def gtja_145(self) -> Panel:
+        return _safe_div(mean(self.d.volume, 9) - mean(self.d.volume, 26), mean(self.d.volume, 12)) * 100
+
+    def gtja_146(self) -> Panel:
+        smoothed = sma_cn(self.d.returns, 61, 2)
+        deviation = self.d.returns - smoothed
+        return _safe_div(mean(deviation, 20) * deviation, sma_cn(deviation.pow(2), 60, 2))
+
+    def gtja_147(self) -> Panel:
+        return _sequence_regbeta(mean(self.d.close, 12), 12)
+
+    def gtja_148(self) -> Panel:
+        left = rank(correlation(self.d.open, ts_sum(mean(self.d.volume, 60), 9), 6))
+        right = rank(self.d.open - ts_min(self.d.open, 14))
+        return _conditional(left < right, -1.0, 0.0, valid=left.notna() & right.notna())
+
+    def gtja_149(self) -> Panel:
+        (benchmark_close,) = self._require_external("gtja_149", "benchmark_close")
+        benchmark = _broadcast_series(benchmark_close, self.d.close)
+        benchmark_return = _safe_div(benchmark - delay(benchmark, 1), delay(benchmark, 1))
+        down = benchmark_return < 0
+        stock_return = self.d.returns.where(down)
+        return regbeta(stock_return, benchmark_return.where(down), 252)
+
+    def gtja_150(self) -> Panel:
+        return (self.d.close + self.d.high + self.d.low) / 3 * self.d.volume
+
+    def gtja_151(self) -> Panel:
+        return sma_cn(self.d.close - delay(self.d.close, 20), 20, 1)
+
+    def gtja_152(self) -> Panel:
+        inner = delay(sma_cn(delay(_safe_div(self.d.close, delay(self.d.close, 9)), 1), 9, 1), 1)
+        return sma_cn(mean(inner, 12) - mean(inner, 26), 9, 1)
+
+    def gtja_153(self) -> Panel:
+        return (mean(self.d.close, 3) + mean(self.d.close, 6) + mean(self.d.close, 12) + mean(self.d.close, 24)) / 4
+
+    def gtja_154(self) -> Panel:
+        left = self.d.vwap - ts_min(self.d.vwap, 16)
+        right = correlation(self.d.vwap, mean(self.d.volume, 180), 18)
+        return _conditional(left < right, 1.0, 0.0, valid=left.notna() & right.notna())
+
+    def gtja_155(self) -> Panel:
+        difference = sma_cn(self.d.volume, 13, 2) - sma_cn(self.d.volume, 27, 2)
+        return difference - sma_cn(difference, 10, 2)
+
+    def gtja_156(self) -> Panel:
+        left = rank(decay_linear(delta(self.d.vwap, 5), 3))
+        mixed = self.d.open * .15 + self.d.low * .85
+        right = rank(decay_linear(-_safe_div(delta(mixed, 2), mixed), 3))
+        return -element_max(left, right)
+
+    def gtja_157(self) -> Panel:
+        inner = -rank(delta(self.d.close - 1, 5))
+        first = ts_min(product(rank(rank(scale(np.log(ts_sum(ts_min(rank(rank(inner)), 2), 1))))), 1), 5)
+        return first + ts_rank(delay(-self.d.returns, 6), 5)
+
+    def gtja_158(self) -> Panel:
+        smooth = sma_cn(self.d.close, 15, 2)
+        return _safe_div((self.d.high - smooth) - (self.d.low - smooth), self.d.close)
+
+    def gtja_159(self) -> Panel:
+        previous = delay(self.d.close, 1)
+        low = element_min(self.d.low, previous); high = element_max(self.d.high, previous)
+        def component(window: int) -> Panel:
+            return _safe_div(self.d.close - ts_sum(low, window), ts_sum(high - low, window))
+        value = component(6) * 12 * 24 + component(12) * 6 * 24 + component(24) * 6 * 12
+        return value * 100 / (6 * 12 + 6 * 24 + 12 * 24)
+
+    def gtja_160(self) -> Panel:
+        volatility = stddev(self.d.close, 20)
+        return sma_cn(volatility.where(self.d.close <= delay(self.d.close, 1), 0.0), 20, 1)

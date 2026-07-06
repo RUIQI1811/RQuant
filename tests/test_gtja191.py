@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.factors.gtja191 import (  # noqa: E402
     GTJA191,
+    GTJA191DataError,
     GTJA191_NAMES,
     GTJA191ExternalData,
     GTJA191Panels,
@@ -190,6 +191,49 @@ class GTJA191FirstEightyTest(unittest.TestCase):
 
     def test_first_eighty_return_aligned_panels(self):
         for number in range(1, 81):
+            with self.subTest(number=number):
+                result = self.calculator.calculate(number)
+                self.assertEqual(result.shape, self.panels.close.shape)
+
+
+class GTJA191MiddleEightyTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.panels = _complete_panels(days=400)
+        cls.calculator = GTJA191(cls.panels)
+
+    def test_gtja_088_is_twenty_day_price_change_percent(self):
+        previous = delay(self.panels.close, 20)
+        expected = (self.panels.close - previous) / previous * 100.0
+        pd.testing.assert_frame_equal(self.calculator.calculate(88), expected)
+
+    def test_gtja_100_is_twenty_day_volume_std(self):
+        pd.testing.assert_frame_equal(
+            self.calculator.calculate(100),
+            stddev(self.panels.volume, 20),
+        )
+
+    def test_gtja_126_is_typical_price(self):
+        expected = (self.panels.close + self.panels.high + self.panels.low) / 3.0
+        pd.testing.assert_frame_equal(self.calculator.calculate(126), expected)
+
+    def test_gtja_143_carries_prior_value_on_non_positive_day(self):
+        actual = self.calculator.calculate(143)
+        mask = self.panels.close <= delay(self.panels.close, 1)
+        pd.testing.assert_frame_equal(
+            actual.where(mask),
+            delay(actual, 1).where(mask),
+        )
+
+    def test_gtja_149_requires_benchmark_close(self):
+        panels = GTJA191Panels(
+            **{**self.panels.__dict__, "external": GTJA191ExternalData()}
+        )
+        with self.assertRaisesRegex(GTJA191DataError, "benchmark_close"):
+            GTJA191(panels).calculate(149)
+
+    def test_middle_eighty_return_aligned_panels(self):
+        for number in range(81, 161):
             with self.subTest(number=number):
                 result = self.calculator.calculate(number)
                 self.assertEqual(result.shape, self.panels.close.shape)

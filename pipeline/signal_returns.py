@@ -17,6 +17,8 @@ if str(_PIPELINE_DIR) not in sys.path:
 try:
     from .Selector import B1Selector, BrickChartSelector
     from .pipeline_core import MarketDataPreparer, SelectorPickPrecomputer, TopTurnoverPoolBuilder
+    from .strategies.bdsr_macd_obv import BDSRMACDOBVSelector
+    from .strategies.mbdsr import MBDSRSelector
     from .select_stock import (
         _calc_warmup,
         _resolve_cfg_path,
@@ -27,6 +29,8 @@ try:
 except ImportError:
     from Selector import B1Selector, BrickChartSelector
     from pipeline_core import MarketDataPreparer, SelectorPickPrecomputer, TopTurnoverPoolBuilder
+    from strategies.bdsr_macd_obv import BDSRMACDOBVSelector
+    from strategies.mbdsr import MBDSRSelector
     from select_stock import (
         _calc_warmup,
         _resolve_cfg_path,
@@ -248,12 +252,43 @@ def _make_brick_selector(cfg_brick: dict) -> BrickChartSelector:
     )
 
 
+def _make_mbdsr_selector(cfg_mbdsr: dict) -> MBDSRSelector:
+    return MBDSRSelector(
+        use_next_confirm=bool(cfg_mbdsr.get("use_next_confirm", False)),
+        extra_bars_buffer=int(cfg_mbdsr.get("extra_bars_buffer", 10)),
+    )
+
+
+def _make_bdsr_macd_obv_selector(cfg_strategy: dict) -> BDSRMACDOBVSelector:
+    return BDSRMACDOBVSelector(
+        bdsr_fast_window=int(cfg_strategy.get("bdsr_fast_window", 9)),
+        bdsr_slow_window=int(cfg_strategy.get("bdsr_slow_window", 26)),
+        macd_fast_period=int(cfg_strategy.get("macd_fast_period", 12)),
+        macd_slow_period=int(cfg_strategy.get("macd_slow_period", 26)),
+        macd_signal_period=int(cfg_strategy.get("macd_signal_period", 9)),
+        obv_ma_window=int(cfg_strategy.get("obv_ma_window", 20)),
+        obv_trend_lookback=int(cfg_strategy.get("obv_trend_lookback", 3)),
+        extra_bars_buffer=int(cfg_strategy.get("extra_bars_buffer", 10)),
+    )
+
+
 def build_enabled_selectors(cfg: dict) -> List[Tuple[str, object]]:
     selectors: List[Tuple[str, object]] = []
     if cfg.get("b1", {}).get("enabled", True):
         selectors.append(("b1", _make_b1_selector(cfg["b1"])))
     if cfg.get("brick", {}).get("enabled", True):
         selectors.append(("brick", _make_brick_selector(cfg["brick"])))
+    if cfg.get("bdsr_macd_obv", {}).get("enabled", False):
+        selectors.append(
+            (
+                "bdsr_macd_obv",
+                _make_bdsr_macd_obv_selector(cfg["bdsr_macd_obv"]),
+            )
+        )
+    if cfg.get("mbdsr", {}).get("enabled", False):
+        selector = _make_mbdsr_selector(cfg["mbdsr"])
+        name = "mbdsr_confirm" if selector.use_next_confirm else "mbdsr"
+        selectors.append((name, selector))
     return selectors
 
 

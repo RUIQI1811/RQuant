@@ -248,7 +248,7 @@ def render_research_html(summary: dict[str, Any], *, output_dir: str | Path) -> 
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>AgentTrader Research Report</title>
+  <title>RQuant Research Report</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #1f2933; }}
     h1, h2 {{ margin-bottom: 8px; }}
@@ -263,7 +263,7 @@ def render_research_html(summary: dict[str, Any], *, output_dir: str | Path) -> 
   </style>
 </head>
 <body>
-  <h1>AgentTrader Research Report</h1>
+  <h1>RQuant Research Report</h1>
   <p class="muted">Generated at {escape(str(summary.get("run_date") or ""))}</p>
 
   <h2>Run Overview</h2>

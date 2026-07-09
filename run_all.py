@@ -90,7 +90,7 @@ def _print_recommendations() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="AgentTrader 全流程自动运行脚本")
+    parser = argparse.ArgumentParser(description="RQuant 全流程自动运行脚本")
     parser.add_argument(
         "--skip-fetch", action="store_true",
         help="跳过步骤 1（行情下载），直接从初选开始",

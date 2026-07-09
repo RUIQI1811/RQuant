@@ -2,7 +2,7 @@
 
 ## Goal
 
-Restructure StockTradebyZ from a mostly `pipeline/`-centered layout into a
+Restructure RQuant from a mostly `pipeline/`-centered layout into a
 top-level quantitative research layout that matches the research flow:
 market data, factors, labels, models, training, signals, strategies, backtest,
 and reports.

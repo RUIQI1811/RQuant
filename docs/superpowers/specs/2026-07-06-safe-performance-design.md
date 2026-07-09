@@ -40,6 +40,6 @@ Each optimization gets a focused regression test before implementation. Run the
 targeted tests after each change, then run the full suite with:
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 NUMBA_CACHE_DIR=/tmp/stocktradebyz-numba \
+PYTHONDONTWRITEBYTECODE=1 NUMBA_CACHE_DIR=/tmp/rquant-numba \
   /opt/miniconda3/envs/stocktrade/bin/python -m unittest discover -s tests -p 'test_*.py'
 ```

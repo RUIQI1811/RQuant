@@ -1,4 +1,4 @@
-"""Top-level CLI dispatcher for StockTradebyZ research workflows."""
+"""Top-level CLI dispatcher for RQuant research workflows."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="StockTradebyZ quant research CLI")
+    parser = argparse.ArgumentParser(description="RQuant research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("fetch-data", help="Fetch and update market data")

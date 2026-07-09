@@ -1,4 +1,4 @@
-# AgentTrader Architecture
+# RQuant Architecture
 
 This project keeps two research tracks and routes both into the same signal shape.
 

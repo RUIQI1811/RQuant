@@ -1,4 +1,4 @@
-# StockTradebyZ 代理工作指南
+# RQuant 代理工作指南
 
 ## 适用范围
 
@@ -6,7 +6,7 @@
 
 ## 项目定位
 
-StockTradebyZ 是一个面向 A 股的半自动量化研究工具，主要能力包括：
+RQuant 是一个面向 A 股的本地量化研究工具，主要能力包括：
 
 - 通过 Tushare 获取日线数据。
 - 用 B1、砖型图、mBDSR、BDSR/MACD/OBV 共振等自定义规则初选股票。

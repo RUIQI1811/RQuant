@@ -423,7 +423,7 @@ def cmd_factor_backtest(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pipeline.cli",
-        description="AgentTrader 量化初选 CLI",
+        description="RQuant 量化研究 CLI",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 

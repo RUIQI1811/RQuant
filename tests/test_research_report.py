@@ -134,7 +134,7 @@ class ResearchReportTest(unittest.TestCase):
             self.assertTrue(result["html_path"].exists())
             written = json.loads(result["json_path"].read_text(encoding="utf-8"))
             self.assertEqual(written["review"]["recommendation_count"], 1)
-            self.assertIn("AgentTrader Research Report", result["html_path"].read_text(encoding="utf-8"))
+            self.assertIn("RQuant Research Report", result["html_path"].read_text(encoding="utf-8"))
 
 
 class TopLevelResearchReportImportTests(unittest.TestCase):

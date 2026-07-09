@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Restructure StockTradebyZ into top-level quant research packages for market data, factors, labels, models, training, signals, strategies, backtest, and reports while preserving the factor/custom-strategy boundary and existing research behavior.
+**Goal:** Restructure RQuant into top-level quant research packages for market data, factors, labels, models, training, signals, strategies, backtest, and reports while preserving the factor/custom-strategy boundary and existing research behavior.
 
 **Architecture:** Create the new top-level package layout first, then migrate one boundary at a time while old `pipeline.*` imports remain thin wrappers until the new commands and tests cover the same workflows. Factor research, custom buy strategies, and ML scoring each feed the shared `signals` package and then the realistic `backtest` package.
 
@@ -107,7 +107,7 @@ Expected: FAIL with `ModuleNotFoundError` for the first missing package.
 Create each package `__init__.py` with this content, replacing the package name:
 
 ```python
-"""Top-level package for StockTradebyZ market research components."""
+"""Top-level package for RQuant market research components."""
 ```
 
 Use package-specific one-line docstrings:
@@ -1770,7 +1770,7 @@ Expected: FAIL with missing `scripts.quant_cli`.
 Create `scripts/quant_cli.py`:
 
 ```python
-"""Top-level CLI dispatcher for StockTradebyZ research workflows."""
+"""Top-level CLI dispatcher for RQuant research workflows."""
 
 from __future__ import annotations
 
@@ -1778,7 +1778,7 @@ import argparse
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="StockTradebyZ quant research CLI")
+    parser = argparse.ArgumentParser(description="RQuant research CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("fetch-data", help="Fetch and update market data")

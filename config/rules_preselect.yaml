@@ -10,6 +10,14 @@ global:
   n_turnover_days: 43             # 滚动成交额窗口（日）
   min_bars_buffer: 10             # 额外的最小 bar 缓冲
 
+# ── 回测股票池过滤 ─────────────────────────────────────────────────
+stock_pool:
+  top_m: 5000                     # 每日按成交额保留前 N 只
+  min_price: 1.0                  # 排除低价异常标的
+  min_turnover: 0.0               # 最低滚动成交额门槛，0 表示不启用
+  exclude_boards: []              # 可选 gem/star/bj；原始抓取层默认已排除这些板块
+  require_tradeable: true         # 排除停牌或不可交易日
+
 # ── B1 策略参数（KDJ + 知行均线多头排列） ────────────────────────────
 b1:
   enabled: false
@@ -22,7 +30,7 @@ b1:
 
 # ── 砖型图（BrickChart）策略参数 ──────────────────────────────────────
 brick:
-  enabled: true
+  enabled: false
 
   # 砖型图计算参数
   n: 8
@@ -55,3 +63,25 @@ brick:
   wma_short: 5
   wma_mid: 10
   wma_long: 20
+
+# ── mBDSR 风格趋势回踩策略 ──────────────────────────────────────
+mbdsr:
+  enabled: false
+  # false: 信号当日买入；true: 次日收盘突破信号日最高价才确认
+  use_next_confirm: false
+  extra_bars_buffer: 10
+
+# ── BDSR 金叉 + MACD 水上金叉 + OBV 上升共振策略 ───────────────
+bdsr_macd_obv:
+  enabled: true
+  # BDSR 明确定义为快慢 RCI：RCI9 当日上穿 RCI26
+  bdsr_fast_window: 9
+  bdsr_slow_window: 26
+  # MACD 水上金叉：DIF 上穿 DEA，且两者都大于 0
+  macd_fast_period: 12
+  macd_slow_period: 26
+  macd_signal_period: 9
+  # OBV 位于均线上方，且 OBV 均线较 N 日前上升
+  obv_ma_window: 20
+  obv_trend_lookback: 3
+  extra_bars_buffer: 10

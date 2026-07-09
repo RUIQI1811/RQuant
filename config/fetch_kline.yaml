@@ -3,8 +3,8 @@
 # ============================================================
 
 # 抓取日期范围（YYYYMMDD 或 'today'）
-start: "20190101"
-end: "today"
+start: "20180101"
+end: "20260702"
 
 # 股票清单 CSV 路径（需含 ts_code 与 symbol 列）
 stocklist: "./pipeline/stocklist.csv"
@@ -15,8 +15,8 @@ stocklist: "./pipeline/stocklist.csv"
 #   bj   — 北交所（4/8 开头，后缀 .BJ）
 # 如需全部保留，设为空列表 []
 exclude_boards:
-  - gem
-  - star
+#  - gem
+#  - star
   - bj
 
 # K线数据输出目录

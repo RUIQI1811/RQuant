@@ -8,6 +8,7 @@ __pycache__/
 # Project folders
 .vscode/
 data/
+factor_report/
 
 # Virtual environments
 .venv/

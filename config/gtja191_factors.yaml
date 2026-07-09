@@ -1,2 +1,87 @@
-default_status: active
-factors: {}
+default_status: watch
+
+# Disabled when the pasted GTJA191 leaderboard shows persistently negative
+# Rank IC across 1d/5d/10d/20d, with clearly negative 10d and 20d ICIR.
+# All factors not listed here default to watch.
+factors:
+  gtja_003: disabled
+  gtja_009: disabled
+  gtja_010: disabled
+  gtja_014: disabled
+  gtja_018: disabled
+  gtja_019: disabled
+  gtja_020: disabled
+  gtja_021: disabled
+  gtja_023: disabled
+  gtja_024: disabled
+  gtja_027: disabled
+  gtja_029: disabled
+  gtja_031: disabled
+  gtja_036: disabled
+  gtja_040: disabled
+  gtja_043: disabled
+  gtja_050: disabled
+  gtja_051: disabled
+  gtja_052: disabled
+  gtja_053: disabled
+  gtja_055: disabled
+  gtja_058: disabled
+  gtja_059: disabled
+  gtja_060: disabled
+  gtja_063: disabled
+  gtja_066: disabled
+  gtja_067: disabled
+  gtja_068: disabled
+  gtja_069: disabled
+  gtja_070: disabled
+  gtja_071: disabled
+  gtja_074: disabled
+  gtja_078: disabled
+  gtja_079: disabled
+  gtja_081: disabled
+  gtja_084: disabled
+  gtja_088: disabled
+  gtja_089: disabled
+  gtja_093: disabled
+  gtja_094: disabled
+  gtja_095: disabled
+  gtja_097: disabled
+  gtja_100: disabled
+  gtja_102: disabled
+  gtja_106: disabled
+  gtja_107: disabled
+  gtja_109: disabled
+  gtja_110: disabled
+  gtja_112: disabled
+  gtja_116: disabled
+  gtja_118: disabled
+  gtja_122: disabled
+  gtja_126: disabled
+  gtja_128: disabled
+  gtja_129: disabled
+  gtja_132: disabled
+  gtja_133: disabled
+  gtja_134: disabled
+  gtja_135: disabled
+  gtja_137: disabled
+  gtja_143: disabled
+  gtja_145: disabled
+  gtja_147: disabled
+  gtja_150: disabled
+  gtja_151: disabled
+  gtja_152: disabled
+  gtja_153: disabled
+  gtja_158: disabled
+  gtja_159: disabled
+  gtja_160: disabled
+  gtja_161: disabled
+  gtja_167: disabled
+  gtja_169: disabled
+  gtja_173: disabled
+  gtja_174: disabled
+  gtja_175: disabled
+  gtja_176: disabled
+  gtja_177: disabled
+  gtja_179: disabled
+  gtja_187: disabled
+  gtja_189: disabled

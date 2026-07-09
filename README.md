@@ -199,13 +199,13 @@ filter_status.csv
 查看因子生命周期状态：
 
 ```bash
-python scripts/test_alpha101_batch.py --list-factor-status
+python scripts/test_factor_batch.py --list-factor-status
 ```
 
 运行指定因子：
 
 ```bash
-python scripts/test_alpha101_batch.py \
+python scripts/test_factor_batch.py \
   --factors alpha_040 alpha_013 alpha_016 \
   --windows 10 20 \
   --groups 10
@@ -226,7 +226,8 @@ config/factors.yaml
 ### GTJA191 批处理
 
 ```bash
-python scripts/test_gtja191_batch.py \
+python scripts/test_factor_batch.py \
+  --family gtja191 \
   --factors all \
   --windows 10 20 \
   --groups 10

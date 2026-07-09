@@ -18,7 +18,7 @@ from tests.test_gtja191 import _complete_panels
 class GTJA191BatchTest(unittest.TestCase):
     def test_cli_help_exposes_all_factor_and_resume_controls(self):
         result = subprocess.run(
-            [sys.executable, "scripts/test_gtja191_batch.py", "--help"],
+            [sys.executable, "scripts/test_factor_batch.py", "--family", "gtja191", "--help"],
             cwd=Path(__file__).resolve().parents[1],
             check=True,
             capture_output=True,

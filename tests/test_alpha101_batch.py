@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -64,6 +65,22 @@ def _sample_panels(*, with_cap: bool = False) -> Alpha101Panels:
         industry=groups,
         subindustry=groups,
     )
+
+
+class Alpha101BatchCliTest(unittest.TestCase):
+    def test_cli_help_uses_unified_factor_batch_entrypoint(self):
+        result = subprocess.run(
+            [sys.executable, "scripts/test_factor_batch.py", "--family", "alpha101", "--help"],
+            cwd=Path(__file__).resolve().parents[1],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertIn("--family", result.stdout)
+        self.assertIn("alpha101", result.stdout)
+        self.assertIn("gtja191", result.stdout)
+        self.assertIn("--list-factor-status", result.stdout)
 
 
 class FactorSelectionTest(unittest.TestCase):

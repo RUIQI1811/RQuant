@@ -131,7 +131,7 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 
 ```bash
 /opt/miniconda3/envs/stocktrade/bin/python \
-  scripts/test_alpha101_batch.py --list-factor-status
+  scripts/test_factor_batch.py --list-factor-status
 ```
 
 生成 Alpha077 过滤、Alpha040 排序的最新信号：
@@ -200,7 +200,7 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 复查当前主因子和观察因子：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/test_alpha101_batch.py \
+/opt/miniconda3/envs/stocktrade/bin/python scripts/test_factor_batch.py \
   --factors alpha_040 alpha_013 alpha_016 alpha_044 alpha_069 \
   --windows 10 20 \
   --groups 10

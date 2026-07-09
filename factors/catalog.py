@@ -1,0 +1,113 @@
+"""Configuration-backed lifecycle status for built-in research factors."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping, Sequence
+
+import yaml
+
+from factors.alpha101 import ALPHA101_NAMES, normalize_alpha_name
+
+
+FACTOR_STATUSES = ("active", "watch", "disabled")
+DECISION_TO_STATUS = {
+    "active": "active",
+    "watch": "watch",
+    "low_priority_watch": "watch",
+    "component_only": "watch",
+    "disabled": "disabled",
+    "unscored": "disabled",
+}
+
+
+@dataclass(frozen=True)
+class FactorCatalog:
+    """Assign factors to active, watch, or disabled research tiers."""
+
+    default_status: str = "active"
+    statuses: Mapping[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        if self.default_status not in FACTOR_STATUSES:
+            raise ValueError(
+                f"default_status must be one of {', '.join(FACTOR_STATUSES)}"
+            )
+        normalized: dict[str, str] = {}
+        for raw_name, raw_entry in (self.statuses or {}).items():
+            name = normalize_alpha_name(raw_name)
+            raw_status = _status_from_entry(name, raw_entry)
+            status = str(raw_status).strip().lower()
+            if status not in FACTOR_STATUSES:
+                raise ValueError(
+                    f"invalid status for {name}: {raw_status!r}; "
+                    f"expected one of {', '.join(FACTOR_STATUSES)}"
+                )
+            normalized[name] = status
+        object.__setattr__(self, "statuses", normalized)
+
+    def status_for(self, factor: str | int) -> str:
+        """Return the configured status, falling back to the catalog default."""
+
+        return self.statuses.get(normalize_alpha_name(factor), self.default_status)
+
+    def select(
+        self,
+        factors: Sequence[str],
+        *,
+        include_statuses: Sequence[str] = ("active", "watch"),
+    ) -> tuple[str, ...]:
+        """Filter and order factors by lifecycle tier, then original order."""
+
+        requested_statuses = tuple(str(value).strip().lower() for value in include_statuses)
+        invalid = set(requested_statuses).difference(FACTOR_STATUSES)
+        if invalid:
+            raise ValueError(f"unknown factor statuses: {', '.join(sorted(invalid))}")
+        normalized = tuple(dict.fromkeys(normalize_alpha_name(name) for name in factors))
+        return tuple(
+            name
+            for status in requested_statuses
+            for name in normalized
+            if self.status_for(name) == status
+        )
+
+    def status_map(self, factors: Sequence[str] = ALPHA101_NAMES) -> dict[str, str]:
+        """Return an auditable status mapping for the requested factors."""
+
+        return {normalize_alpha_name(name): self.status_for(name) for name in factors}
+
+
+def load_factor_catalog(path: str | Path) -> FactorCatalog:
+    """Load factor lifecycle settings from YAML and validate all factor names."""
+
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"factor config not found: {config_path}")
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError("factor config root must be a mapping")
+    raw_statuses = payload.get("factors", {}) or {}
+    if not isinstance(raw_statuses, dict):
+        raise ValueError("factor config 'factors' must be a mapping")
+    catalog = FactorCatalog(
+        default_status=str(payload.get("default_status", "active")).strip().lower(),
+        statuses=raw_statuses,
+    )
+    unknown = set(catalog.statuses).difference(ALPHA101_NAMES)
+    if unknown:
+        raise ValueError(f"unknown Alpha101 factors in config: {', '.join(sorted(unknown))}")
+    return catalog
+
+
+def _status_from_entry(factor_name: str, entry: object) -> object:
+    if not isinstance(entry, Mapping):
+        return entry
+    if "status" in entry:
+        return entry["status"]
+    decision = str(entry.get("decision", "")).strip().lower()
+    if decision in DECISION_TO_STATUS:
+        return DECISION_TO_STATUS[decision]
+    raise ValueError(
+        f"structured config for {factor_name} must contain status or a known decision"
+    )

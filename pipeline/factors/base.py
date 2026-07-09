@@ -1,3 +1,3 @@
 """Compatibility wrapper for the moved factor module."""
 
-from factors.gtja191 import *  # noqa: F401,F403
+from factors.base import *  # noqa: F401,F403

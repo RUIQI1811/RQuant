@@ -8,7 +8,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.factors.gtja191 import (  # noqa: E402
+from factors.gtja191 import (  # noqa: E402
     GTJA191,
     GTJA191DataError,
     GTJA191_NAMES,
@@ -26,7 +26,7 @@ from pipeline.factors.gtja191 import (  # noqa: E402
     sumif,
     wma,
 )
-from pipeline.factors.alpha101 import (  # noqa: E402
+from factors.alpha101 import (  # noqa: E402
     correlation,
     delay,
     delta,
@@ -300,7 +300,7 @@ class GTJA191RawAdapterTest(unittest.TestCase):
         self.assertIn("gtja_191", names)
 
     def test_public_factor_package_exports_gtja_registry(self):
-        from pipeline.factors import GTJA191_NAMES as exported_names
+        from factors.gtja191 import GTJA191_NAMES as exported_names
 
         self.assertEqual(exported_names, GTJA191_NAMES)
 
@@ -317,6 +317,13 @@ class GTJA191RawAdapterTest(unittest.TestCase):
         self.assertEqual(direct["symbol"].str.len().unique().tolist(), [6])
         self.assertIn("turnover_value", direct.columns)
         pd.testing.assert_frame_equal(direct, routed)
+
+
+class TopLevelGtja191ImportTests(unittest.TestCase):
+    def test_gtja191_registry_imports_from_top_level_package(self):
+        import factors.gtja191 as gtja191
+
+        self.assertTrue(hasattr(gtja191, "GTJA191DataError"))
 
 
 if __name__ == "__main__":

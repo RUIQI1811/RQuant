@@ -16,7 +16,7 @@ try:
     from strategies.selector import PipelineSelector
     from strategies.mbdsr import calc_obv, calc_rci
 except ImportError:  # pragma: no cover - direct script fallback
-    from Selector import PipelineSelector
+    from selector import PipelineSelector
     from mbdsr import calc_obv, calc_rci
 
 

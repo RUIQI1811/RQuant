@@ -12,7 +12,7 @@ import pandas as pd
 try:
     from strategies.selector import PipelineSelector
 except ImportError:  # pragma: no cover - direct script fallback
-    from Selector import PipelineSelector
+    from selector import PipelineSelector
 
 
 REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")

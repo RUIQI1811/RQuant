@@ -13,7 +13,6 @@
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -22,7 +21,12 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from Selector import AnySelector
+try:
+    from .Selector import AnySelector
+    from .market_data import StockPoolConfig, build_stock_pool_by_date
+except ImportError:  # pragma: no cover - direct script fallback
+    from strategies.selector import AnySelector
+    from market.data import StockPoolConfig, build_stock_pool_by_date
 
 
 # =============================================================================
@@ -209,7 +213,7 @@ class MarketDataPreparer:
         仅叠加 zxdq / zxdkx / wma_bull 列（这些列不随砖型图超参变化，
         可在 trial 间复用，只需计算一次）。
         """
-        from Selector import compute_zx_lines, compute_weekly_ma_bull
+        from strategies.selector import compute_zx_lines, compute_weekly_ma_bull
 
         def _apply_one(item):
             code, df = item
@@ -275,25 +279,34 @@ class MarketDataPreparer:
 class TopTurnoverPoolBuilder:
     """按每日 turnover_n 跨市场排名，构建流动性池。"""
 
-    def __init__(self, top_m: int) -> None:
+    def __init__(
+        self,
+        top_m: int,
+        *,
+        min_price: float = 1.0,
+        min_turnover: float = 0.0,
+        require_tradeable: bool = True,
+        exclude_boards: Tuple[str, ...] = (),
+    ) -> None:
         self.top_m = int(top_m)
+        self.min_price = float(min_price)
+        self.min_turnover = float(min_turnover)
+        self.require_tradeable = bool(require_tradeable)
+        self.exclude_boards = tuple(exclude_boards)
 
     def build(self, prepared: Dict[str, pd.DataFrame]) -> Dict[pd.Timestamp, List[str]]:
         if self.top_m <= 0:
             return {}
-
-        pool: Dict[pd.Timestamp, List[Tuple[float, str]]] = defaultdict(list)
-        for code, df in prepared.items():
-            for dt, val in df["turnover_n"].items():
-                pool[dt].append((float(val), code))
-
-        top_codes_by_date: Dict[pd.Timestamp, List[str]] = {}
-        for dt, lst in pool.items():
-            if not lst:
-                continue
-            lst_sorted = sorted(lst, key=lambda x: x[0], reverse=True)[: self.top_m]
-            top_codes_by_date[dt] = [code for _, code in lst_sorted]
-        return top_codes_by_date
+        return build_stock_pool_by_date(
+            prepared,
+            config=StockPoolConfig(
+                top_m=self.top_m,
+                min_price=self.min_price,
+                min_turnover=self.min_turnover,
+                exclude_boards=self.exclude_boards,
+                require_tradeable=self.require_tradeable,
+            ),
+        )
 
 
 # =============================================================================

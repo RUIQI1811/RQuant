@@ -28,7 +28,7 @@ try:
     from strategies.mbdsr import MBDSRSelector
 except ImportError:  # pragma: no cover - direct script fallback
     from schemas import Candidate
-    from Selector import B1Selector, BrickChartSelector
+    from selector import B1Selector, BrickChartSelector
     from pipeline_core import MarketDataPreparer, TopTurnoverPoolBuilder
     from bdsr_macd_obv import BDSRMACDOBVSelector
     from mbdsr import MBDSRSelector

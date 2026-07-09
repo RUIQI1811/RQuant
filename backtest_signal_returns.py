@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline.signal_returns import run_signal_returns
+from reports.signal_returns import run_signal_returns
 
 
 # Edit these values when you want to run a backtest.

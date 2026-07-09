@@ -2,6 +2,7 @@ import math
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -15,6 +16,7 @@ from pipeline.signal_returns import (
     summary_to_rows,
     summarize_signal_returns,
 )
+from pipeline import signal_returns
 
 
 def _frame(closes):
@@ -32,6 +34,60 @@ def _frame(closes):
 
 
 class SignalReturnsTest(unittest.TestCase):
+    def test_prepare_strategy_data_is_lazy_for_default_independent_path(self):
+        selectors = [("first", object()), ("second", object())]
+        preparer = MagicMock()
+        preparer.prepare.return_value = {"prepared": pd.DataFrame()}
+
+        with patch.object(signal_returns, "MarketDataPreparer", return_value=preparer) as factory:
+            with patch.object(signal_returns, "TopTurnoverPoolBuilder", MagicMock()):
+                prepared = signal_returns.prepare_strategy_data(
+                    raw_data={"000001": pd.DataFrame()},
+                    selectors=selectors,
+                    start_date=None,
+                    warmup_bars=120,
+                    n_turnover_days=43,
+                    top_m=5000,
+                )
+                self.assertEqual(factory.call_count, 0)
+                list(prepared)
+
+        self.assertEqual(factory.call_count, 2)
+
+    def test_prepare_strategy_data_reuses_base_only_when_explicitly_enabled(self):
+        selectors = [("first", object()), ("second", object())]
+        preparer = MagicMock()
+        preparer.prepare_base_only.return_value = {"base": pd.DataFrame()}
+        preparer.apply_selector_features.side_effect = [
+            {"first": pd.DataFrame()},
+            {"second": pd.DataFrame()},
+        ]
+        pool_builder = MagicMock()
+        pool_builder.build.return_value = {pd.Timestamp("2026-01-01"): ["000001"]}
+
+        with patch.object(signal_returns, "MarketDataPreparer", return_value=preparer) as factory:
+            with patch.object(
+                signal_returns,
+                "TopTurnoverPoolBuilder",
+                return_value=pool_builder,
+            ):
+                prepared = signal_returns.prepare_strategy_data(
+                    raw_data={"000001": pd.DataFrame()},
+                    selectors=selectors,
+                    start_date=pd.Timestamp("2026-01-01"),
+                    warmup_bars=120,
+                    n_turnover_days=43,
+                    top_m=5000,
+                    reuse_base_preparation=True,
+                )
+                strategy_names = [item[0] for item in prepared]
+
+        self.assertEqual(strategy_names, ["first", "second"])
+        factory.assert_called_once()
+        preparer.prepare_base_only.assert_called_once()
+        self.assertEqual(preparer.apply_selector_features.call_count, 2)
+        pool_builder.build.assert_called_once_with(preparer.prepare_base_only.return_value)
+
     def test_filter_selectors_by_strategy_keeps_requested_strategy_names(self):
         selectors = [("b1", object()), ("brick", object())]
 
@@ -190,6 +246,13 @@ class SignalReturnsTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["date"], "2026-01-03")
         self.assertAlmostEqual(rows[0]["return_10d"], 10 / 12)
+
+
+class TopLevelSignalReturnsImportTests(unittest.TestCase):
+    def test_signal_returns_imports_from_reports_package(self):
+        import reports.signal_returns as signal_returns
+
+        self.assertTrue(hasattr(signal_returns, "run_signal_returns"))
 
 
 if __name__ == "__main__":

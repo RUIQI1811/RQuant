@@ -12,15 +12,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline.portfolio_backtest import run_portfolio_backtest
+from backtest.portfolio import run_portfolio_backtest
 
 
-# Example: 100000, brick, signal_close, commission 0.8 wan, hold 1 day.
+# Example: 100000, brick, next_open, commission 0.8 wan, hold 1 day.
 INITIAL_CASH = 100000.0
 STRATEGY = "brick"  # "b1" or "brick"
-BUY_MODE = "signal_close"  # "signal_close" or "next_open"
+BUY_MODE = "next_open"  # "signal_close" or "next_open"
 COMMISSION_WAN = 0.8  # 0.8 means 0.008%
 HOLD_DAYS = 1
+MAX_POSITIONS = 10
+POSITION_PCT = 0.1
 
 BACKTEST_START = "2020-10-01"
 BACKTEST_END = "2026-06-05"
@@ -34,6 +36,8 @@ def main() -> None:
         buy_mode=BUY_MODE,
         hold_days=HOLD_DAYS,
         commission_wan=COMMISSION_WAN,
+        max_positions=MAX_POSITIONS,
+        position_pct=POSITION_PCT,
         start_date=BACKTEST_START,
         end_date=BACKTEST_END,
         output_dir=BACKTEST_OUTPUT,
@@ -58,6 +62,8 @@ def main() -> None:
         print(f"sharpe ratio: {summary['sharpe_ratio']:.2f}")
     print(f"trade count: {summary['trade_count']}")
     print(f"trades: {result['trades_path']}")
+    print(f"daily trade plan: {result['orders_path']}")
+    print(f"open positions: {result['positions_path']}")
     print(f"equity curve csv: {result['equity_curve_path']}")
     print(f"equity curve html: {result['equity_curve_html_path']}")
     print(f"summary: {result['summary_path']}")

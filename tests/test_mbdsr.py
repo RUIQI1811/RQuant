@@ -7,8 +7,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.signal_returns import build_enabled_selectors
-from pipeline.strategies.mbdsr import MBDSRSelector, add_mbdsr_features, calc_rci
+from reports.signal_returns import build_enabled_selectors
+from strategies.mbdsr import MBDSRSelector, add_mbdsr_features, calc_rci
 
 
 def _qualifying_frame(*, add_next_confirmation: bool = False) -> pd.DataFrame:

@@ -7,8 +7,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.Selector import BrickChartSelector, BrickComputeParams
-from pipeline.factor_tester import (
+from strategies.selector import BrickChartSelector, BrickComputeParams
+from reports.factor_tester import (
     FactorTester,
     FactorTesterConfig,
     build_long_factor_frame_from_raw,

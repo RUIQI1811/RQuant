@@ -1,5 +1,5 @@
 # Alpha101 factor lifecycle and generated composite-score metadata.
-# Regenerate with: python -m pipeline.factor_scoring --update-config
+# Regenerate with: python -m factors.scoring --update-config
 default_status: disabled
 factors:
   alpha_001:

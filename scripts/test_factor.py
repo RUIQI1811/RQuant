@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data", default="data/raw", help="Raw OHLCV data directory")
     parser.add_argument(
         "--metadata",
-        default="pipeline/stocklist.csv",
+        default="config/stocklist.csv",
         help="Optional symbol metadata CSV with industry/sector/subindustry columns",
     )
     parser.add_argument("--benchmark-file", default=None, help="Optional benchmark OHLC CSV for GTJA factors")

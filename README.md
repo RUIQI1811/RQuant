@@ -1,6 +1,6 @@
 # RQuant
 
-RQuant 是一个面向 A 股的本地量化研究项目。它把行情数据、因子研究、机器学习标签/模型、自定义买点、组合回测和报告输出拆成清晰的顶层模块，同时保留旧 `pipeline/` 入口作为兼容层。
+RQuant 是一个面向 A 股的本地量化研究项目。它把行情数据、因子研究、机器学习标签/模型、自定义买点、组合回测和报告输出拆成清晰的顶层模块。
 
 本项目用于研究和决策辅助，不是自动交易系统。任何回测、因子评分或 AI 复评结果都不代表确定收益，也不应被表述为投资建议。
 
@@ -32,7 +32,6 @@ agent/       Gemini 复评逻辑
 dashboard/   看盘界面与图表导出
 config/      抓取、初选、因子生命周期和复评配置
 data/        本地行情和研究输出，默认不纳入 Git
-pipeline/    旧路径兼容包装，新业务逻辑不应继续放这里
 ```
 
 ## 研究边界
@@ -62,7 +61,7 @@ python -m pip install -r requirements.txt
 推荐使用已有的 stocktrade 环境运行测试和 CLI：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python -m pipeline.cli --help
+/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py --help
 ```
 
 ### 2. 配置密钥
@@ -130,7 +129,7 @@ python run_all.py --start-from 3
 ### 自定义策略信号收益
 
 ```bash
-python -m pipeline.cli signal-returns \
+python scripts/quant_cli.py signal-returns \
   --strategies bdsr_macd_obv \
   --horizons 1,5,10,20 \
   --buy-mode next_open
@@ -145,7 +144,7 @@ data/backtest/
 ### 自定义策略组合回测
 
 ```bash
-python -m pipeline.cli portfolio-backtest \
+python scripts/quant_cli.py portfolio-backtest \
   --strategy bdsr_macd_obv \
   --buy-mode next_open \
   --hold-days 5 \
@@ -166,7 +165,7 @@ data/portfolio_backtest/
 python scripts/test_factor.py \
   --factor alpha_040 \
   --data data/raw \
-  --metadata pipeline/stocklist.csv \
+  --metadata config/stocklist.csv \
   --windows 10 20 \
   --groups 10
 ```
@@ -250,7 +249,7 @@ config/gtja191_factors.yaml
 生成 Alpha077 过滤、Alpha040 排序信号：
 
 ```bash
-python -m pipeline.cli factor-select \
+python scripts/quant_cli.py factor-select \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --filter-top-quantile 0.5 \
@@ -260,7 +259,7 @@ python -m pipeline.cli factor-select \
 直接生成信号并运行组合回测：
 
 ```bash
-python -m pipeline.cli factor-backtest \
+python scripts/quant_cli.py factor-backtest \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --hold-days 20
@@ -277,7 +276,7 @@ initial-cash = 10000000
 ### 研究报告
 
 ```bash
-python -m pipeline.cli research-report \
+python scripts/quant_cli.py research-report \
   --signal-dir data/backtest \
   --portfolio-dir data/portfolio_backtest \
   --candidates data/candidates/candidates_latest.json \
@@ -300,7 +299,7 @@ data/reports/research_report.html
 python scripts/quant_cli.py --help
 ```
 
-当前它负责展示 RQuant 的顶层命令分组；已运行成熟的工作流仍通过 `python -m pipeline.cli ...` 和 `scripts/test_*.py` 保持兼容。
+当前它负责展示 RQuant 的顶层命令分组；已运行成熟的工作流仍通过 `python scripts/quant_cli.py ...` 和 `scripts/test_*.py` 保持兼容。
 
 ## 输出目录
 
@@ -322,7 +321,7 @@ factor_report/              因子检验和批处理结果
 快速检查 CLI：
 
 ```bash
-python -m pipeline.cli --help
+python scripts/quant_cli.py --help
 python scripts/quant_cli.py --help
 ```
 
@@ -359,7 +358,7 @@ OK
 - 新自定义买点放在 `strategies/`。
 - 新回测能力放在 `backtest/`。
 - 新报告能力放在 `reports/`。
-- `pipeline/` 只保留兼容 wrapper 和尚未迁出的共享遗留核心。
+- 旧兼容目录已移除；新增能力应放入对应顶层模块。
 
 涉及收益、信号、因子或组合回测的改动必须检查时间对齐、费用、交易约束、空信号、缺失数据和输出路径，并添加针对性回归测试。
 

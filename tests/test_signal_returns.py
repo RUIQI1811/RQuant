@@ -8,7 +8,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.signal_returns import (
+from reports.signal_returns import (
     build_signal_return_rows,
     filter_selectors_by_strategy,
     filter_picks_by_date,
@@ -16,7 +16,7 @@ from pipeline.signal_returns import (
     summary_to_rows,
     summarize_signal_returns,
 )
-from pipeline import signal_returns
+from reports import signal_returns
 
 
 def _frame(closes):

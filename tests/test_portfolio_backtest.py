@@ -7,8 +7,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline import portfolio_backtest
-from pipeline.portfolio_backtest import (
+from backtest import portfolio as portfolio_backtest
+from backtest.portfolio import (
     FeeModel,
     PortfolioSettings,
     calculate_trade_return,

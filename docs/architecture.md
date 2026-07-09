@@ -26,7 +26,7 @@ DataManager
 - Custom strategy signals: `strategies/`
 - BacktestEngine: `backtest/portfolio.py`, `backtest/factor_portfolio.py`
 - Reporter: `reports/`
-- Compatibility wrappers: `pipeline/`
+- Compatibility wrappers: legacy wrapper paths
 
 ## Factor Research Timing and NAV Boundaries
 
@@ -40,7 +40,7 @@ GTJA191 is a second calculator family inside the same factor-research track. Its
 public names are `gtja_001` through `gtja_191`, its resumable outputs live under
 `factor_report/gtja191_batch/`, and factors that require benchmark or Fama-French
 series fail explicitly when those point-in-time inputs are absent. GTJA values
-enter the same FactorTester lag and report pipeline as Alpha101, but neither family
+enter the same FactorTester lag and report workflow as Alpha101, but neither family
 is routed into the custom buy-strategy evaluation path.
 
 `factors/correlation.py` diagnoses redundancy inside the factor track. It

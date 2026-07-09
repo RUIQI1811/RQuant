@@ -1,5 +1,5 @@
 """
-pipeline/io.py
+market/io.py
 统一路径解析 + 原子写入 candidates*.json。
 
 契约规则：
@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Union
 
-from pipeline.schemas import CandidateRun
+from signals.candidates import CandidateRun
 
 logger = logging.getLogger(__name__)
 

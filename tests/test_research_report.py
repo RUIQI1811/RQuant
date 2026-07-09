@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pipeline.research_report import build_research_summary, run_research_report
+from reports.research_report import build_research_summary, run_research_report
 
 
 class ResearchReportTest(unittest.TestCase):

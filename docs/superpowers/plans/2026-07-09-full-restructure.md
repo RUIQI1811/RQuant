@@ -33,7 +33,7 @@ Create or migrate these packages:
 - `training/`: walk-forward splits, feature/label validation, model score prediction.
 - `backtest/`: realistic portfolio engine and factor portfolio bridge.
 - `reports/`: factor tester, batch runners, signal returns, and research report generation.
-- `pipeline/`: temporary wrappers importing from the new packages.
+- legacy wrapper paths: temporary wrappers importing from the new packages.
 - `tests/`: focused migration tests and preserved behavior tests.
 - `docs/`: updated package map and command usage.
 
@@ -249,7 +249,7 @@ Run:
 rg -n "pipeline\\.signals|pipeline\\.factors\\.signals|pipeline\\.strategies\\.adapters" .
 ```
 
-For production code outside `pipeline/` wrappers, replace old imports with:
+For production code outside legacy wrapper paths wrappers, replace old imports with:
 
 ```python
 from signals.schema import Signal, signals_to_frame
@@ -420,7 +420,7 @@ Run:
 
 ```bash
 python -m unittest tests.test_mbdsr tests.test_bdsr_macd_obv
-python -m pipeline.cli preselect --help
+python scripts/quant_cli.py preselect --help
 ```
 
 Expected: tests PASS and CLI help prints usage without import errors.
@@ -547,7 +547,7 @@ Run:
 ```bash
 python -m unittest tests.test_market_data tests.test_fetch_kline
 python -m market.fetch_kline --help
-python -m pipeline.fetch_kline --help
+python -m market.fetch_kline --help
 ```
 
 Expected: tests PASS. Both module commands print help or fail only with the same existing argument behavior, not import errors.
@@ -1852,7 +1852,7 @@ Run:
 
 ```bash
 python -m unittest tests.test_cli
-python -m pipeline.cli --help
+python scripts/quant_cli.py --help
 python scripts/quant_cli.py --help
 ```
 
@@ -1913,12 +1913,12 @@ In `docs/architecture.md`, replace the current mapping block with:
 - Custom strategy signals: `strategies/`
 - BacktestEngine: `backtest/portfolio.py`, `backtest/factor_portfolio.py`
 - Reporter: `reports/`
-- Compatibility wrappers: `pipeline/`
+- Compatibility wrappers: legacy wrapper paths
 ```
 
 - [ ] **Step 3: Update AGENTS architecture boundaries**
 
-In `AGENTS.md`, replace `pipeline/`-specific boundary bullets with:
+In `AGENTS.md`, replace legacy wrapper paths-specific boundary bullets with:
 
 ```markdown
 1. **因子研究**
@@ -1926,7 +1926,7 @@ In `AGENTS.md`, replace `pipeline/`-specific boundary bullets with:
    - 因子 IC、Rank IC、分组收益等统计不得与自定义买点的评价逻辑混合。
 2. **自定义买入策略**
    - B1、brick、mBDSR、BDSR/MACD/OBV 共振及新的明确买点规则放在 `strategies/`。
-   - 旧 `pipeline/` 路径仅作为兼容包装，不能成为新业务逻辑的主要位置。
+   - 旧 legacy wrapper paths 路径仅作为兼容包装，不能成为新业务逻辑的主要位置。
 3. **机器学习研究**
    - forward return 与训练标签放在 `labels/`。
    - Ridge、ElasticNet、LightGBM、MLP 等模型放在 `models/`。
@@ -1963,7 +1963,7 @@ git commit -m "docs: document top-level research layout"
 Run:
 
 ```bash
-python -m pipeline.cli --help
+python scripts/quant_cli.py --help
 python scripts/quant_cli.py --help
 python -m unittest tests.test_package_layout
 python -m unittest tests.test_signal_schema
@@ -1996,7 +1996,7 @@ Expected: stale imports appear only in compatibility wrappers or tests explicitl
 
 - [ ] **Step 4: Decide whether to keep wrappers**
 
-If full validation passes and README documents new commands, keep `pipeline/` wrappers for one release cycle. Do not delete wrappers in the same migration unless the user explicitly asks for no compatibility shims.
+If full validation passes and README documents new commands, keep legacy wrapper paths wrappers for one release cycle. Do not delete wrappers in the same migration unless the user explicitly asks for no compatibility shims.
 
 - [ ] **Step 5: Commit validation fixes**
 

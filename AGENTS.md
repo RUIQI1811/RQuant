@@ -26,7 +26,6 @@ RQuant 是一个面向 A 股的本地量化研究工具，主要能力包括：
    - 因子 IC、Rank IC、分组收益等统计不得与自定义买点的评价逻辑混合。
 2. **自定义买入策略**
    - B1、brick、mBDSR、BDSR/MACD/OBV 共振及新的明确买点规则放在 `strategies/`。
-   - 旧 `pipeline/` 路径仅作为兼容包装，不能成为新业务逻辑的主要位置。
 3. **机器学习研究**
    - forward return 与训练标签放在 `labels/`。
    - Ridge、ElasticNet、LightGBM、MLP 等模型放在 `models/`。
@@ -47,7 +46,7 @@ date, symbol, signal_type, source, score, weight, metadata
 ## 主要入口与数据流
 
 - `run_all.py`：日常全流程编排，按顺序运行抓取、初选、图表导出、Gemini 复评和结果打印；子步骤失败时应立即终止。
-- `pipeline/cli.py`：研究工作流的统一 CLI，对外命令包括 `preselect`、`signal-returns`、`portfolio-backtest` 和 `research-report`。
+- `scripts/quant_cli.py`：研究工作流的统一 CLI，对外命令包括 `preselect`、`signal-returns`、`portfolio-backtest` 和 `research-report`。
 - `config/*.yaml`：运行参数的主要入口。参数不应无理由硬编码在业务逻辑中。
 - `data/raw/`：原始日线数据。
 - `data/candidates/`：初选结果。
@@ -62,7 +61,7 @@ date, symbol, signal_type, source, score, weight, metadata
    - 调试时先记录实际解释器：`python -c "import sys; print(sys.executable)"`。
    - 从真实堆栈的第一个有效异常入手，区分环境缺失、外部服务失败和业务逻辑回归。
    - 优先用最小 smoke test 保留原始证据，不得一遇到错误就大范围重构。
-2. **小步修改，保留兼容**
+2. **小步修改，保持清晰边界**
    - 优先在现有边界内修复问题，避免与任务无关的格式化、重命名和全局重构。
    - 新功能尽量通过注册、适配器或新模块接入，不直接破坏旧脚本、CLI 参数或文件格式。
    - 修改前检查 `git status --short`；现有未提交变更默认属于用户，不覆盖、不回滚、不顺手清理。
@@ -110,7 +109,7 @@ python -m pip install -r requirements.txt
 快速检查 CLI 是否可加载：
 
 ```bash
-python -m pipeline.cli --help
+python scripts/quant_cli.py --help
 ```
 
 运行针对性测试：

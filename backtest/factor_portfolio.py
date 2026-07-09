@@ -70,7 +70,7 @@ def signal_frame_to_picks(
 def run_filter_rank_portfolio_backtest(
     *,
     data_dir: str | Path = "data/raw",
-    metadata_path: str | Path | None = "pipeline/stocklist.csv",
+    metadata_path: str | Path | None = "config/stocklist.csv",
     output_dir: str | Path = DEFAULT_FACTOR_PORTFOLIO_OUTPUT,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,

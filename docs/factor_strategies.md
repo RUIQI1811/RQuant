@@ -137,13 +137,13 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 生成 Alpha077 过滤、Alpha040 排序的最新信号：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python -m pipeline.cli factor-select
+/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-select
 ```
 
 生成历史区间信号：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python -m pipeline.cli factor-select \
+/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-select \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --filter-top-quantile 0.5 \
@@ -156,7 +156,7 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 初始资金为 1000 万元。
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python -m pipeline.cli factor-backtest \
+/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-backtest \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --hold-days 20
@@ -165,7 +165,7 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 如需研究过滤后 `alpha_040` 排名的中间区间，使用从 1 开始的闭区间：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python -m pipeline.cli factor-backtest \
+/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-backtest \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --rank-start 200 \
@@ -192,7 +192,7 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 /opt/miniconda3/envs/stocktrade/bin/python scripts/test_factor.py \
   --factor alpha_040 \
   --data data/raw \
-  --metadata pipeline/stocklist.csv \
+  --metadata config/stocklist.csv \
   --windows 10 20 \
   --groups 10
 ```
@@ -209,7 +209,7 @@ cohort 队列中，同时每日仍可新建 cohort，可能使总名义仓位超
 重新评分并更新因子生命周期配置：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python -m pipeline.factor_scoring \
+/opt/miniconda3/envs/stocktrade/bin/python -m factors.scoring \
   --update-config
 ```
 

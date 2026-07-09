@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from pipeline.pipeline_core import MarketDataPreparer, SelectorPickPrecomputer, TopTurnoverPoolBuilder
+from market.preparation import MarketDataPreparer, SelectorPickPrecomputer, TopTurnoverPoolBuilder
 from strategies.bdsr_macd_obv import BDSRMACDOBVSelector
 from strategies.mbdsr import MBDSRSelector
 from strategies.preselect import _calc_warmup, _resolve_cfg_path, _sorted_zx, load_config, load_raw_data

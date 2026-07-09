@@ -1,5 +1,5 @@
 """
-pipeline/select_stock.py
+strategies/preselect.py
 量化初选核心逻辑。
 
 职责：
@@ -7,7 +7,7 @@ pipeline/select_stock.py
   - 加载 data/raw/*.csv 日线数据
   - 运行 B1、砖型图、mBDSR 和 BDSR/MACD/OBV 共振策略
   - 返回 List[Candidate]（纯 Python 对象，不写文件）
-  - 写文件由 cli.py 调用 io.py 完成
+  - 写文件由 scripts/quant_cli.py 调用 market/io.py 完成
 """
 from __future__ import annotations
 
@@ -20,18 +20,11 @@ import numpy as np
 import pandas as pd
 import yaml
 
-try:
-    from pipeline.schemas import Candidate
-    from strategies.selector import B1Selector, BrickChartSelector
-    from pipeline.pipeline_core import MarketDataPreparer, TopTurnoverPoolBuilder
-    from strategies.bdsr_macd_obv import BDSRMACDOBVSelector
-    from strategies.mbdsr import MBDSRSelector
-except ImportError:  # pragma: no cover - direct script fallback
-    from schemas import Candidate
-    from selector import B1Selector, BrickChartSelector
-    from pipeline_core import MarketDataPreparer, TopTurnoverPoolBuilder
-    from bdsr_macd_obv import BDSRMACDOBVSelector
-    from mbdsr import MBDSRSelector
+from signals.candidates import Candidate
+from strategies.selector import B1Selector, BrickChartSelector
+from market.preparation import MarketDataPreparer, TopTurnoverPoolBuilder
+from strategies.bdsr_macd_obv import BDSRMACDOBVSelector
+from strategies.mbdsr import MBDSRSelector
 
 logger = logging.getLogger(__name__)
 
@@ -279,8 +272,8 @@ def run_brick(
     date_str = pick_date.strftime("%Y-%m-%d")
     candidates: List[Candidate] = []
 
-    for code in pool_codes:        
-        df = prepared.get(code)        
+    for code in pool_codes:
+        df = prepared.get(code)
         if df is None or pick_date not in df.index:
             continue
         try:

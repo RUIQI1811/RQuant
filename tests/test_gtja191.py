@@ -33,7 +33,7 @@ from factors.alpha101 import (  # noqa: E402
     rank,
     stddev,
 )
-from pipeline.factor_tester import build_long_factor_frame_from_raw  # noqa: E402
+from reports.factor_tester import build_long_factor_frame_from_raw  # noqa: E402
 
 
 def _complete_panels(days: int = 320, symbols: int = 6) -> GTJA191Panels:

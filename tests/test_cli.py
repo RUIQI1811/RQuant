@@ -3,7 +3,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from unittest.mock import patch
 
-from pipeline import cli
+from scripts import quant_cli as cli
 
 
 class CliTest(unittest.TestCase):

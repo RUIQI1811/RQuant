@@ -23,6 +23,7 @@ Selector 一览
 """
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol, Sequence
@@ -31,9 +32,10 @@ import numpy as np
 import pandas as pd
 from numba import njit as _njit
 
-# Older runs imported this file directly as ``Selector`` and left Numba cache
-# entries under that module name.  Keep the alias so package imports through
-# ``pipeline.Selector`` can reuse those caches instead of failing to unpickle.
+_NUMBA_CACHE = os.environ.get("RQUANT_NUMBA_CACHE", "").lower() in {"1", "true", "yes"}
+
+# Older runs imported this file directly as ``Selector``. Keep the alias for
+# saved references while Numba disk caching remains opt-in via RQUANT_NUMBA_CACHE.
 sys.modules.setdefault("Selector", sys.modules[__name__])
 
 # =============================================================================
@@ -41,7 +43,7 @@ sys.modules.setdefault("Selector", sys.modules[__name__])
 # =============================================================================
 
 # ── KDJ 核心递推 ──────────────────────────────────────────────────────────
-@_njit(cache=True)
+@_njit(cache=_NUMBA_CACHE)
 def _kdj_core(rsv: np.ndarray) -> tuple:          # noqa: UP006
     n = len(rsv)
     K = np.empty(n, dtype=np.float64)
@@ -54,7 +56,7 @@ def _kdj_core(rsv: np.ndarray) -> tuple:          # noqa: UP006
     return K, D, J
 
 # ── 连续绿柱计数 ──────────────────────────────────────────────────────────
-@_njit(cache=True)
+@_njit(cache=_NUMBA_CACHE)
 def _green_run(brick_vals: np.ndarray) -> np.ndarray:
     """green_run[i] = 截至 i-1 连续绿柱根数（brick < 0）。"""
     n = len(brick_vals)
@@ -67,7 +69,7 @@ def _green_run(brick_vals: np.ndarray) -> np.ndarray:
     return out
 
 # ── 成交量最大日非阴线核心 ───────────────────────────────────────────────
-@_njit(cache=True)
+@_njit(cache=_NUMBA_CACHE)
 def _max_vol_not_bearish(
     vol: np.ndarray, open_: np.ndarray, close: np.ndarray, n: int,
 ) -> np.ndarray:
@@ -86,7 +88,7 @@ def _max_vol_not_bearish(
     return mask
 
 # ── 砖型图核心 ────────────────────────────────────────────────────────────
-@_njit(cache=True)
+@_njit(cache=_NUMBA_CACHE)
 def _compute_brick_numba(
     high: np.ndarray, low: np.ndarray, close: np.ndarray,
     n: int, m1: int, m2: int, m3: int,
@@ -737,7 +739,7 @@ class B1Selector(PipelineSelector):
         self._wma_filter = WeeklyMABullFilter(
             wma_short=wma_short, wma_mid=wma_mid, wma_long=wma_long,
         )
-        self._max_vol_filter:MaxVolNotBearishFilter = MaxVolNotBearishFilter(n=max_vol_lookback) 
+        self._max_vol_filter:MaxVolNotBearishFilter = MaxVolNotBearishFilter(n=max_vol_lookback)
         _b1_filters: list = [self._kdj_filter, self._zx_filter, self._wma_filter, self._max_vol_filter]
         super().__init__(
             filters=_b1_filters,

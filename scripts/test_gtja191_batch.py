@@ -24,7 +24,7 @@ from strategies.preselect import load_raw_data  # noqa: E402
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate GTJA191 factors sequentially with resumable reports.")
     parser.add_argument("--data", default="data/raw")
-    parser.add_argument("--metadata", default="pipeline/stocklist.csv")
+    parser.add_argument("--metadata", default="config/stocklist.csv")
     parser.add_argument("--benchmark-file", default=None)
     parser.add_argument("--style-factor-file", default=None)
     parser.add_argument("--output", default="factor_report/gtja191_batch")

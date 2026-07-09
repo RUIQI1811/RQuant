@@ -7,7 +7,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.factor_tester import build_long_factor_frame_from_raw
+from reports.factor_tester import build_long_factor_frame_from_raw
 from factors.alpha101 import (
     ALPHA101_NAMES,
     Alpha101,

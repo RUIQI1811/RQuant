@@ -3,8 +3,8 @@ run_all.py
 ~~~~~~~~~~
 一键运行完整交易选股流程：
 
-  步骤 1  pipeline/fetch_kline.py   — 拉取最新 K 线数据
-  步骤 2  pipeline/cli.py preselect — 量化初选，生成候选列表
+  步骤 1  market/fetch_kline.py      — 拉取最新 K 线数据
+  步骤 2  scripts/quant_cli.py preselect — 量化初选，生成候选列表
   步骤 3  dashboard/export_kline_charts.py — 导出候选股 K 线图
   步骤 4  agent/gemini_review.py    — Gemini 图表分析评分
   步骤 5  打印推荐购买的股票
@@ -102,7 +102,7 @@ def main() -> None:
     args = parser.parse_args()
 
     start = args.start_from
-    
+
     if args.skip_fetch and start == 1:
         start = 2
 
@@ -110,14 +110,14 @@ def main() -> None:
     if start <= 1:
         _run(
             "1/4  拉取 K 线数据（fetch_kline）",
-            [PYTHON, "-m", "pipeline.fetch_kline"],
+            [PYTHON, "-m", "market.fetch_kline"],
         )
 
     # ── 步骤 2：量化初选 ─────────────────────────────────────────────
     if start <= 2:
         _run(
             "2/4  量化初选（cli preselect）",
-            [PYTHON, "-m", "pipeline.cli", "preselect"],
+            [PYTHON, str(ROOT / "scripts" / "quant_cli.py"), "preselect"],
         )
 
     # ── 步骤 3：导出 K 线图 ──────────────────────────────────────────

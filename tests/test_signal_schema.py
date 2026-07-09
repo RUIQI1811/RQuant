@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.schemas import Candidate
+from signals.candidates import Candidate
 from signals.schema import Signal, frame_to_signals, signals_to_frame
 from signals.strategy_adapters import candidate_to_signal, candidates_to_signal_frame
 

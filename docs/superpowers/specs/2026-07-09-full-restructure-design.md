@@ -2,7 +2,7 @@
 
 ## Goal
 
-Restructure RQuant from a mostly `pipeline/`-centered layout into a
+Restructure RQuant from a mostly legacy wrapper paths-centered layout into a
 top-level quantitative research layout that matches the research flow:
 market data, factors, labels, models, training, signals, strategies, backtest,
 and reports.
@@ -127,7 +127,7 @@ predict-score          -> training -> signals
 model-backtest         -> training -> signals -> backtest
 ```
 
-During migration, old `python -m pipeline.cli ...` commands may be kept as thin
+During migration, old `python scripts/quant_cli.py ...` commands may be kept as thin
 wrappers if that reduces risk. If compatibility is intentionally dropped in a
 specific cleanup phase, the deletion must happen only after the new commands,
 tests, and docs are in place.
@@ -188,7 +188,7 @@ testable system.
 3. Move backtest and report modules after signal imports are stable.
 4. Add the ML package skeleton with forward-return labels, model interfaces,
    walk-forward validation, and prediction-score output.
-5. Update CLI wrappers and docs after each phase, then remove old `pipeline/`
+5. Update CLI wrappers and docs after each phase, then remove old legacy wrapper paths
    wrappers only if the new commands and tests cover the same workflows.
 
 No phase should rename generated output columns without a migration reason.
@@ -233,7 +233,7 @@ Verification commands should remain unittest-based unless the project adopts a
 new test runner:
 
 ```bash
-python -m pipeline.cli --help
+python scripts/quant_cli.py --help
 python -m unittest tests.test_cli
 python -m unittest tests.test_factor_tester
 python -m unittest tests.test_portfolio_backtest

@@ -11,8 +11,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline import factor_portfolio_backtest
-from pipeline.factor_portfolio_backtest import signal_frame_to_picks
+import backtest.factor_portfolio as factor_portfolio_backtest
+from backtest.factor_portfolio import signal_frame_to_picks
 
 
 class FactorPortfolioBacktestTest(unittest.TestCase):

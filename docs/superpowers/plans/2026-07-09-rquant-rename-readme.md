@@ -23,7 +23,7 @@
 - Modify: `tests/test_research_report.py`
 
 - [ ] Replace previous public names with `RQuant`.
-- [ ] Preserve existing package names and commands such as `python -m pipeline.cli`.
+- [ ] Preserve existing package names and commands such as `python scripts/quant_cli.py`.
 - [ ] Update the research-report test assertion to `RQuant Research Report`.
 
 ### Task 2: Rewrite README

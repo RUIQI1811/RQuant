@@ -6,9 +6,9 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pipeline.signal_returns import build_enabled_selectors
-from pipeline.select_stock import run_bdsr_macd_obv
-from pipeline.strategies.bdsr_macd_obv import (
+from reports.signal_returns import build_enabled_selectors
+from strategies.preselect import run_bdsr_macd_obv
+from strategies.bdsr_macd_obv import (
     BDSRMACDOBVSelector,
     add_bdsr_macd_obv_features,
 )

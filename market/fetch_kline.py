@@ -382,7 +382,7 @@ def main(log_path: Optional[Path] = None):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------- 从 stocklist.csv 读取股票池 ---------- #
-    stocklist_path = _resolve_cfg_path(cfg.get("stocklist", "./pipeline/stocklist.csv"))
+    stocklist_path = _resolve_cfg_path(cfg.get("stocklist", "./config/stocklist.csv"))
     exclude_boards = set(cfg.get("exclude_boards") or [])
     codes = load_codes_from_stocklist(stocklist_path, exclude_boards)
 

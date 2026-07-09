@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run resumable, memory-bounded batch tests for Alpha101 factors."
     )
     parser.add_argument("--data", default="data/raw", help="Raw per-symbol OHLCV CSV directory")
-    parser.add_argument("--metadata", default="pipeline/stocklist.csv", help="Optional classification CSV")
+    parser.add_argument("--metadata", default="config/stocklist.csv", help="Optional classification CSV")
     parser.add_argument("--output", default="factor_report/alpha101_batch", help="Batch output directory")
     parser.add_argument(
         "--factor-config",

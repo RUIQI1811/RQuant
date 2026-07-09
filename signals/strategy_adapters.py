@@ -4,7 +4,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from pipeline.schemas import Candidate, CandidateRun
+from signals.candidates import Candidate, CandidateRun
 from signals.schema import Signal, signals_to_frame
 
 

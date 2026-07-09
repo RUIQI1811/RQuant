@@ -23,7 +23,7 @@ from reports.signal_returns import (
     format_percent,
 )
 from market.data import StockPoolConfig, build_stock_pool_by_date, clean_market_data
-from pipeline.pipeline_core import MarketDataPreparer, SelectorPickPrecomputer
+from market.preparation import MarketDataPreparer, SelectorPickPrecomputer
 from strategies.preselect import _calc_warmup, _resolve_cfg_path, load_config, load_raw_data
 
 

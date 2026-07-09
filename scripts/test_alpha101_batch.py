@@ -178,7 +178,7 @@ def main() -> int:
             Path(__file__),
             Path(sys.modules[Alpha101.__module__].__file__),
             Path(sys.modules[FactorTester.__module__].__file__),
-            ROOT / "pipeline" / "alpha101_batch.py",
+            ROOT / "reports" / "alpha101_batch.py",
         ]
     )
     data_sig = directory_signature(args.data, metadata_path)

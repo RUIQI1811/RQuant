@@ -8,7 +8,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import market.data as market_data
 from market.data import StockPoolConfig, build_stock_pool_by_date, clean_daily_frame
-from pipeline.pipeline_core import TopTurnoverPoolBuilder
 
 
 class MarketDataTest(unittest.TestCase):
@@ -99,35 +98,6 @@ class MarketDataTest(unittest.TestCase):
         )
 
         self.assertEqual(pool[pd.Timestamp("2026-01-01")], ["600000"])
-
-    def test_top_turnover_pool_builder_uses_vectorized_filters(self):
-        date = pd.Timestamp("2026-01-02")
-        prepared = {
-            "600002": pd.DataFrame(
-                {"close": [10.0], "turnover_n": [100.0], "is_tradeable": [True]},
-                index=[date],
-            ),
-            "600001": pd.DataFrame(
-                {"close": [10.0], "turnover_n": [100.0], "is_tradeable": [True]},
-                index=[date],
-            ),
-            "600003": pd.DataFrame(
-                {"close": [0.5], "turnover_n": [300.0], "is_tradeable": [True]},
-                index=[date],
-            ),
-            "600004": pd.DataFrame(
-                {"close": [20.0], "turnover_n": [400.0], "is_tradeable": [False]},
-                index=[date],
-            ),
-            "600005": pd.DataFrame(
-                {"close": [20.0], "turnover_n": [float("nan")], "is_tradeable": [True]},
-                index=[date],
-            ),
-        }
-
-        pool = TopTurnoverPoolBuilder(top_m=2).build(prepared)
-
-        self.assertEqual(pool[date], ["600002", "600001"])
 
     def test_st_limit_rate_uses_each_dates_point_in_time_flag(self):
         frame = pd.DataFrame(

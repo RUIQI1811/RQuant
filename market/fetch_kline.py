@@ -373,7 +373,7 @@ def main(log_path: Optional[Path] = None):
     pro = ts.pro_api(ts_token)
 
     # ---------- 日期解析 ---------- #
-    raw_start = str(cfg.get("start", "20260701"))
+    raw_start = str(cfg.get("start", "20190101"))
     raw_end   = str(cfg.get("end",   "today"))
     start = dt.date.today().strftime("%Y%m%d") if raw_start.lower() == "today" else raw_start
     end   = dt.date.today().strftime("%Y%m%d") if raw_end.lower()   == "today" else raw_end

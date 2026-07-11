@@ -35,6 +35,7 @@ def _prepare_worker(args: tuple) -> tuple[str, Optional[pd.DataFrame]]:
 
     df = df.copy()
     df.columns = [c.lower() for c in df.columns]
+    df = df.reset_index(drop=True)
 
     if "date" not in df.columns:
         return code, None
@@ -255,7 +256,18 @@ class MarketDataPreparer:
             futures = {ex.submit(_apply_one, item): item[0]
                        for item in zx_prepared.items()}
             for fut in as_completed(futures):
-                pass  # 就地写入，无需收集返回值
+                code = futures[fut]
+                try:
+                    returned_code, _ = fut.result()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"brick-only feature preparation failed for symbol {code}"
+                    ) from exc
+                if returned_code != code:
+                    raise RuntimeError(
+                        "brick-only feature worker returned a mismatched symbol: "
+                        f"expected {code}, got {returned_code}"
+                    )
         return zx_prepared
 
     @staticmethod

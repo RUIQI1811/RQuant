@@ -4,12 +4,14 @@ from typing import Protocol
 
 import pandas as pd
 
+from domain.signals import SignalBook
+
 
 class FactorSignalEngine(Protocol):
     """Protocol for factor-based signal engines."""
 
     source: str
 
-    def generate_signals(self, factor_data: pd.DataFrame) -> pd.DataFrame:
-        """Return unified signal DataFrame columns defined in signals.schema."""
+    def generate_signal_book(self, factor_data: pd.DataFrame) -> SignalBook:
+        """Return canonical signals; DataFrames are persistence adapters only."""
         ...

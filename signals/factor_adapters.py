@@ -5,7 +5,8 @@ from typing import Optional
 
 import pandas as pd
 
-from signals.schema import Signal, signals_to_frame
+from domain.signals import SignalBook
+from signals.schema import Signal, frame_to_signals, signals_to_frame
 
 
 @dataclass(frozen=True)
@@ -82,3 +83,6 @@ class SimpleFactorSignalEngine:
 
     def generate_signals(self, factor_data: pd.DataFrame) -> pd.DataFrame:
         return factor_frame_to_signal_frame(factor_data, config=self.config)
+
+    def generate_signal_book(self, factor_data: pd.DataFrame) -> SignalBook:
+        return SignalBook(frame_to_signals(self.generate_signals(factor_data)))

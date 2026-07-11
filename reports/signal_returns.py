@@ -9,6 +9,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
+from domain.artifacts import WorkflowResult
+from domain.reports import SignalReturnResult
+
 from market.preparation import MarketDataPreparer, SelectorPickPrecomputer, TopTurnoverPoolBuilder
 from strategies.bdsr_macd_obv import BDSRMACDOBVSelector
 from strategies.mbdsr import MBDSRSelector
@@ -362,7 +365,7 @@ def run_signal_returns(
     strategies: Optional[Sequence[str]] = None,
     buy_mode: str = BUY_MODE_SIGNAL_CLOSE,
     reuse_base_preparation: bool = False,
-) -> dict:
+) -> WorkflowResult[SignalReturnResult]:
     cfg = load_config(config_path)
     global_cfg = cfg.get("global", {})
 
@@ -431,10 +434,20 @@ def run_signal_returns(
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    return {
-        "rows": all_rows,
-        "summary": summary,
-        "csv_path": csv_path,
-        "summary_path": summary_path,
-        "summary_csv_path": summary_csv_path,
-    }
+    result = SignalReturnResult(
+        total_signals=len(all_rows),
+        horizons=tuple(int(horizon) for horizon in horizons),
+        buy_mode=buy_mode,
+        metrics=metrics,
+        rows=tuple(all_rows),
+    )
+    return WorkflowResult.from_mapping(
+        {
+            "result": result,
+            "rows": all_rows,
+            "summary": summary,
+            "csv_path": csv_path,
+            "summary_path": summary_path,
+            "summary_csv_path": summary_csv_path,
+        }
+    )

@@ -9,8 +9,15 @@ class LightGBMModel:
     def __init__(self, **params: object) -> None:
         try:
             import lightgbm as lgb
-        except ImportError as exc:
-            raise ImportError("LightGBMModel requires lightgbm to be installed") from exc
+        except (ImportError, OSError) as exc:
+            detail = (
+                " and the native libomp runtime"
+                if "libomp.dylib" in str(exc).casefold()
+                else ""
+            )
+            raise ImportError(
+                f"LightGBMModel requires lightgbm{detail} to be installed and importable"
+            ) from exc
         self.model = lgb.LGBMRegressor(**params)
 
     def fit(self, features: pd.DataFrame, target: pd.Series) -> "LightGBMModel":

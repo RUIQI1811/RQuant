@@ -121,16 +121,24 @@ class FactorSelectionTest(unittest.TestCase):
                 "default_status: disabled\n"
                 "factors:\n"
                 "  alpha_001:\n"
-                "    final_score: 80\n"
-                "    decision: active\n"
-                "    useful_horizons: [10d, 20d]\n"
+                "    status: active\n"
                 "  alpha_002:\n"
-                "    decision: component_only\n",
+                "    status: watch\n",
                 encoding="utf-8",
             )
             catalog = load_factor_catalog(path)
             self.assertEqual(catalog.status_for("alpha_001"), "active")
             self.assertEqual(catalog.status_for("alpha_002"), "watch")
+
+            path.write_text(
+                "default_status: disabled\n"
+                "factors:\n"
+                "  alpha_001:\n"
+                "    note: missing lifecycle status\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "must contain status"):
+                load_factor_catalog(path)
 
             path.write_text("factors:\n  alpha_999: active\n", encoding="utf-8")
             with self.assertRaisesRegex((KeyError, ValueError), "999"):
@@ -248,6 +256,8 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             report_dir = Path(temp_dir) / "alpha_101"
             for filename in (
                 "tradable_long_short.csv",
+                "tradable_top_n.csv",
+                "tradable_top_quantile.csv",
                 "stat_long_short.csv",
                 "top_n_return.csv",
                 "top_n_summary.csv",
@@ -269,8 +279,11 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             self.assertIn("top_1_mean_return", result.leaderboard.columns)
             self.assertIn("top_5_mean_return", result.leaderboard.columns)
             self.assertIn("top_10_mean_return", result.leaderboard.columns)
+            self.assertIn("tradable_top_quantile_sharpe", result.leaderboard.columns)
+            self.assertIn("tradable_top_1_sharpe", result.leaderboard.columns)
             samples = pd.read_csv(report_dir / "sample_performance.csv")
             self.assertEqual(set(samples["sample"]), {"in_sample", "out_of_sample"})
+            self.assertIn("tradable_top_quantile_period_return", samples.columns)
             summary = pd.read_csv(report_dir / "summary.csv")
             lag = summary.loc[summary["metric"].eq("factor_lag_days"), "value"].iloc[0]
             self.assertEqual(float(lag), 1.0)

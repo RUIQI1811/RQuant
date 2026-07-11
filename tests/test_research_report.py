@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from reports.research_report import build_research_summary, run_research_report
+from reports.research_report import (
+    ReportConsistencyError,
+    ReportInputError,
+    build_research_summary,
+    run_research_report,
+)
 
 
 class ResearchReportTest(unittest.TestCase):
@@ -81,6 +86,8 @@ class ResearchReportTest(unittest.TestCase):
             self.assertEqual(summary["portfolio"]["total_return"], 0.1)
             self.assertFalse(summary["review"]["exists"])
             self.assertEqual(summary["review"]["recommendation_count"], 0)
+            self.assertEqual(summary["validation"]["status"], "warning")
+            self.assertTrue(summary["source_fingerprints"]["signal_summary"])
 
     def test_run_research_report_writes_json_and_html(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,6 +142,147 @@ class ResearchReportTest(unittest.TestCase):
             written = json.loads(result["json_path"].read_text(encoding="utf-8"))
             self.assertEqual(written["review"]["recommendation_count"], 1)
             self.assertIn("RQuant Research Report", result["html_path"].read_text(encoding="utf-8"))
+            self.assertFalse(any(output_dir.glob(".*.tmp")))
+
+    def test_required_missing_or_invalid_inputs_fail_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            signal_dir = root / "signal"
+            portfolio_dir = root / "portfolio"
+            signal_dir.mkdir()
+            portfolio_dir.mkdir()
+            candidates = root / "candidates.json"
+            candidates.write_text(
+                json.dumps({"pick_date": "2026-07-11", "candidates": []}),
+                encoding="utf-8",
+            )
+            (portfolio_dir / "portfolio_summary.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(ReportInputError, "missing required signal summary"):
+                build_research_summary(
+                    signal_dir=signal_dir,
+                    portfolio_dir=portfolio_dir,
+                    candidates_path=candidates,
+                )
+
+            (signal_dir / "signal_summary.json").write_text("{broken", encoding="utf-8")
+            with self.assertRaisesRegex(ReportInputError, "cannot read signal summary"):
+                build_research_summary(
+                    signal_dir=signal_dir,
+                    portfolio_dir=portfolio_dir,
+                    candidates_path=candidates,
+                )
+
+    def test_inconsistent_artifacts_are_blocked_unless_explicitly_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            signal_dir = root / "signal"
+            portfolio_dir = root / "portfolio"
+            output_dir = root / "report"
+            signal_dir.mkdir()
+            portfolio_dir.mkdir()
+            candidates = root / "candidates.json"
+            review = root / "suggestion.json"
+            (signal_dir / "signal_summary.json").write_text(
+                json.dumps(
+                    {
+                        "buy_mode": "signal_close",
+                        "start_date": "2026-01-01",
+                        "end_date": "2026-06-01",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (portfolio_dir / "portfolio_summary.json").write_text(
+                json.dumps(
+                    {
+                        "buy_mode": "next_open",
+                        "start_date": "2026-01-01",
+                        "end_date": "2026-06-02",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            candidates.write_text(
+                json.dumps({"pick_date": "2026-06-01", "candidates": []}),
+                encoding="utf-8",
+            )
+            review.write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "date": "2026-06-02",
+                        "review_candidates": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ReportConsistencyError) as raised:
+                run_research_report(
+                    signal_dir=signal_dir,
+                    portfolio_dir=portfolio_dir,
+                    candidates_path=candidates,
+                    review_path=review,
+                    output_dir=output_dir,
+                )
+            self.assertFalse(output_dir.exists())
+            self.assertEqual(len(raised.exception.errors), 3)
+
+            result = run_research_report(
+                signal_dir=signal_dir,
+                portfolio_dir=portfolio_dir,
+                candidates_path=candidates,
+                review_path=review,
+                output_dir=output_dir,
+                allow_inconsistent=True,
+            )
+            self.assertEqual(result["summary"]["validation"]["status"], "error")
+            self.assertIn("Artifact Validation", result["html_path"].read_text(encoding="utf-8"))
+
+    def test_partial_review_is_never_presented_as_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            signal_dir = root / "signal"
+            portfolio_dir = root / "portfolio"
+            signal_dir.mkdir()
+            portfolio_dir.mkdir()
+            (signal_dir / "signal_summary.json").write_text(
+                json.dumps({"buy_mode": "next_open"}),
+                encoding="utf-8",
+            )
+            (portfolio_dir / "portfolio_summary.json").write_text(
+                json.dumps({"buy_mode": "next_open"}),
+                encoding="utf-8",
+            )
+            candidates = root / "candidates.json"
+            candidates.write_text(
+                json.dumps({"pick_date": "2026-07-11", "candidates": []}),
+                encoding="utf-8",
+            )
+            review = root / "suggestion.json"
+            review.write_text(
+                json.dumps(
+                    {
+                        "status": "partial",
+                        "date": "2026-07-11",
+                        "failed_count": 1,
+                        "failed_codes": ["000001"],
+                        "review_candidates": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = build_research_summary(
+                signal_dir=signal_dir,
+                portfolio_dir=portfolio_dir,
+                candidates_path=candidates,
+                review_path=review,
+            )
+
+            self.assertEqual(summary["review"]["status"], "partial")
+            self.assertIn("review status is partial", summary["validation"]["errors"])
 
 
 class TopLevelResearchReportImportTests(unittest.TestCase):

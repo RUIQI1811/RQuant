@@ -12,14 +12,6 @@ from factors.alpha101 import ALPHA101_NAMES, normalize_alpha_name
 
 
 FACTOR_STATUSES = ("active", "watch", "disabled")
-DECISION_TO_STATUS = {
-    "active": "active",
-    "watch": "watch",
-    "low_priority_watch": "watch",
-    "component_only": "watch",
-    "disabled": "disabled",
-    "unscored": "disabled",
-}
 
 
 @dataclass(frozen=True)
@@ -105,9 +97,6 @@ def _status_from_entry(factor_name: str, entry: object) -> object:
         return entry
     if "status" in entry:
         return entry["status"]
-    decision = str(entry.get("decision", "")).strip().lower()
-    if decision in DECISION_TO_STATUS:
-        return DECISION_TO_STATUS[decision]
     raise ValueError(
-        f"structured config for {factor_name} must contain status or a known decision"
+        f"structured config for {factor_name} must contain status"
     )

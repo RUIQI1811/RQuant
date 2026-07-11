@@ -31,7 +31,7 @@ retry_base_delay: 10
 request_delay: 5
 
 # true: 跳过已存在单股 JSON（断点续跑）
-skip_existing: false
+skip_existing: true
 
-# 推荐最小分数门槛
+# 研究候选展示的最小分数门槛
 suggest_min_score: 4.0

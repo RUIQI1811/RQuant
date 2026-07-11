@@ -1,13 +1,14 @@
 # RQuant Architecture
 
-This project keeps two research tracks and routes both into the same signal shape.
+This project keeps three research paths and routes them into the same signal shape.
 
 ```text
 DataManager
 → UniverseBuilder
 → Feature / Factor Layer
 → Signal Layer
-   ├─ FactorSignalEngine      # factor ranking / scoring
+   ├─ FactorSignalEngine      # single-factor, gate/rank, and rank ensembles
+   ├─ ModelScoreEngine        # walk-forward model scores
    └─ StrategySignalEngine    # B1, brick, mBDSR, and BDSR/MACD/OBV rules
 → PortfolioConstructor
 → RiskManager
@@ -18,6 +19,8 @@ DataManager
 ## Current Mapping
 
 - DataManager: `market/fetch_kline.py`, `market/data.py`, `market/io.py`
+- Domain contracts: `domain/` owns cross-boundary values, signals, execution
+  records, backtest results, workflow results, and artifact references.
 - UniverseBuilder: `market/data.py::build_stock_pool_by_date`
 - Factor research: `factors/`, `reports/factor_tester.py`, `reports/alpha101_batch.py`, `reports/gtja191_batch.py`
 - Label generation: `labels/make_forward_return.py`
@@ -26,6 +29,33 @@ DataManager
 - Custom strategy signals: `strategies/`
 - BacktestEngine: `backtest/portfolio.py`, `backtest/factor_portfolio.py`
 - Reporter: `reports/`
+- System diagnostics: `reports/system_doctor.py` performs read-only dependency,
+  configuration, secret-presence, and local market-data checks; `doctor` exposes it
+  through the public CLI and only required failures produce a nonzero exit code.
+- Public CLI: `scripts/quant_cli.py`; legacy fetch/factor scripts delegate to the same callable APIs
+- Framework runtime: `rquant/` discovers the project root, initializes logging only
+  for real command execution, records one atomic run manifest per invocation, and
+  exposes `python -m rquant`, the installed `rquant` command, and read-only run lookup.
+- Compatibility CLI: `scripts/quant_cli.py` retains the established parser and
+  handler injection points while delegating executed scripts through the governed
+  runtime. It remains compatible during migration but is no longer the preferred entry.
+- Daily orchestration: `run_all.py` uses the public CLI for fetch and preselection,
+  validates its 1-to-5 execution range, fails fast on subprocess or final-artifact
+  errors, and keeps AI-reviewed candidates explicitly separate from trade advice.
+- External review recovery: `agent/base_reviewer.py` fingerprints provider/model,
+  prompt, date, symbol, and chart content before reusing per-symbol JSON. Writes are
+  atomic, `run_manifest.json` is checkpointed after every symbol, and partial runs
+  keep completed work but return nonzero.
+- Point-in-time chart export: `dashboard/export_kline_charts.py` truncates every raw
+  frame at candidate `pick_date`, requires an exact bar on that date, atomically
+  writes each image, checkpoints signatures/hashes, and returns nonzero on partial
+  export so future bars cannot leak into AI review.
+- Market-fetch recovery: `market/fetch_kline.py` atomically checkpoints every symbol
+  into `_fetch_manifest.json`. Resume accepts only the same date/output/universe
+  signature, retries failed or pending symbols, and returns nonzero for partial runs.
+- Research-report consistency: `reports/research_report.py` requires valid core JSON,
+  checks review dates/status plus signal/portfolio timing fields, fingerprints every
+  input, and blocks inconsistent reports unless diagnostic override is explicit.
 - Compatibility wrappers: legacy wrapper paths
 
 ## Factor Research Timing and NAV Boundaries
@@ -43,6 +73,15 @@ series fail explicitly when those point-in-time inputs are absent. GTJA values
 enter the same FactorTester lag and report workflow as Alpha101, but neither family
 is routed into the custom buy-strategy evaluation path.
 
+`factors/operators.py` is the small shared operator kernel for Alpha101, GTJA191,
+and registered custom factors. It owns only operators with identical tested
+semantics across families, including cross-sectional rank, lag, rolling
+correlation/covariance, common rolling reductions, safe division, and linear
+decay. Family-specific definitions such as Chinese `SMA`, GTJA `WMA`,
+`highday`/`lowday`, and regression operators remain in `factors/gtja191.py`.
+Batch implementation fingerprints include the shared operator file so a future
+operator change cannot silently reuse stale factor reports.
+
 `factors/correlation.py` diagnoses redundancy inside the factor track. It
 lags factor values by one trading day, calculates Spearman and Pearson correlations
 within each daily stock cross-section, and averages those daily correlations across
@@ -53,18 +92,30 @@ not route factor values into the custom-strategy path.
 grouping, statistical NAV, or tradable portfolio construction. The original factor
 is retained as `factor_raw`; evaluation uses `factor_lagged` / `factor_processed`.
 
-The factor track exposes two deliberately separate NAVs:
+The factor track exposes long-only A-share evaluation plus legacy long-short
+diagnostics:
+
+- `tradable_top_n_cum_nav` in `tradable_top_n.csv` buys only the highest ranked
+  fixed-count buckets. It uses close-to-close daily returns, staggered holding
+  sleeves, point-in-time universe filters, limit-up entry blocks, limit-down exit
+  delays, commission, stamp tax, and slippage.
+- `tradable_top_quantile_cum_nav` in `tradable_top_quantile.csv` applies the same
+  long-only execution model to the highest factor quantile. This is the preferred
+  generic tradability metric for A-share factor review because it does not assume
+  shorting is available.
 
 - `stat_cum_nav` in `long_short.csv` compounds Top-Bottom `forward_return_h`
   observations. It is a statistical diagnostic only. Its annualization uses
   `252 / (N * h)` and its Sharpe uses `sqrt(252 / h)`.
 - `tradable_cum_nav` in `tradable_long_short.csv` uses close-to-close daily returns,
   `h` staggered sleeves, point-in-time universe filters, directional limit rules,
-  delayed exits, commission, stamp tax, and slippage. Its risk metrics use the
-  resulting daily net-return series.
+  delayed exits, commission, stamp tax, and slippage. It is retained for
+  long-short diagnostics and backwards-compatible reports, not as the primary
+  A-share trading metric.
 
-Forward returns must not feed `tradable_cum_nav`. Missing historical ST or market-cap
-inputs are reported as unavailable rather than reconstructed from current metadata.
+Forward returns must not feed any `tradable_*_cum_nav`. Missing historical ST or
+market-cap inputs are reported as unavailable rather than reconstructed from
+current metadata.
 
 `factors/brick.py` exposes the existing BrickChart logic to this research
 track without moving or changing the custom strategy. `brick` retains
@@ -73,6 +124,16 @@ track without moving or changing the custom strategy. `brick` retains
 Both are lagged by FactorTester in the same way as every other factor. This is a
 cross-sectional factor diagnostic; the stock-pool and full strategy P&L remain in
 the existing signal-return and portfolio-backtest paths.
+
+`factors/custom.py` follows the same registry, calculator, panel-builder, and
+long-format adapter shape as the Alpha101 and GTJA191 families. `custom_001`
+computes the negative cross-sectional rank of the five-day rolling covariance
+between ranked daily returns and ranked point-in-time turnover value;
+`custom_002` ranks the close discount relative to point-in-time VWAP. Both are
+routed only through
+`FactorTester`; the tester applies the standard one-trading-day lag before IC,
+grouping, or tradable long-only evaluation. It does not enter or modify the
+custom buy-strategy path under `strategies/`.
 
 `factors/filter_rank.py` composes factors without blending their raw
 scales. The first factor defines a point-in-time cross-sectional gate; the second
@@ -83,6 +144,61 @@ ranking. It emits the unified signal schema plus daily universe and filter audit
 files. `backtest/factor_portfolio.py` passes those ranked signals to the
 realistic portfolio engine without routing them through custom selectors. This
 remains in the factor track and is not a custom buy-point strategy.
+
+`factors/ensemble.py` is the family-independent weighted-rank combiner. It accepts
+long-format `date, symbol, factor, factor_value` rows, converts each daily factor
+cross-section to an oriented percentile, applies explicit positive weights, and
+renormalizes only across available factors after enforcing the configured weight-
+coverage threshold. `build_alpha101_rank_ensemble_frame` is the current calculator
+adapter: it calculates all requested Alpha101 components, applies the same factor
+lag and point-in-time listing/liquidity/ST filters, and preserves raw component
+values and percentiles in the signal metadata. `factor-ensemble-select` writes the
+auditable signals; `factor-ensemble-backtest` routes the same scores into the strict
+staggered-cohort portfolio engine. Other factor families must add adapters to this
+combiner rather than duplicate its weighting semantics.
+
+## Machine-Learning Timing Boundary
+
+`training/multifactor.py` is the public multi-factor fitting orchestrator. It
+builds one shared lagged factor matrix, optionally applies per-date rank or
+z-score transforms, and runs every requested model against identical
+walk-forward windows. Its leaderboard compares out-of-sample diagnostics only;
+each model keeps a separate unified `signals.csv` for the constrained long-only
+portfolio backtest. This prevents model comparison from silently changing the
+feature sample, target, purge gap, or execution path.
+
+`training/build_dataset.py` is the reproducible raw-data adapter for ML. It
+calculates explicitly requested Alpha101, GTJA191, or registered custom factors,
+shifts every feature by exactly one trading day, and separately creates labels
+before date filtering. Its default target is aligned to portfolio execution:
+next-open entry followed by an open-price exit after `N` holding bars. Close-to-close
+returns remain an explicit diagnostic mode. The output manifest records raw-data
+and implementation signatures plus per-column missing counts; GTJA external series
+remain explicit inputs.
+
+`training/train_walk_forward.py` is the executable ML boundary. Feature and label
+files are joined one-to-one on `date, symbol`; feature columns are always explicit.
+Each rolling window contains training dates, a purge gap measured in trading dates,
+and a disjoint test block. `next_open_return_Nd` uses the open at `t+N+1` and thus
+requires a purge of at least `N+1` dates; close-to-close `forward_return_Nd` requires
+at least `N`. Only test-block predictions enter `predictions.csv` and the unified
+model `signals.csv`; training fitted values are never mixed into reported scores.
+
+Every window writes predictions, metrics, and a local model artifact before its
+manifest. Resume is allowed only when feature data, label data, configuration, and
+implementation hashes match. Ridge and ElasticNet have tested NumPy fallbacks;
+scikit-learn, LightGBM, and Torch are optional installed backends. The MLP
+standardizes features and targets from each training window only and supports CPU,
+MPS, or CUDA plus save/load. Model outputs do not modify factor calculators or
+custom-strategy rules.
+
+`backtest/signal_portfolio.py` is the public bridge from the stable signal schema
+to the strict staggered-cohort engine. It can consume factor, model, or strategy
+signal files without importing their calculators. It filters one explicit source,
+orders candidates by score, caps the daily list, executes at the next trading-day
+open, and preserves the existing fee, lot, suspension, limit, and T+1 behavior.
+The current cohort engine is equal-weight only, so unequal daily signal weights are
+rejected instead of silently discarded.
 
 The factor portfolio uses strict staggered cohort slots: an `h`-day holding period
 owns exactly `h` independently funded sleeves and schedules one sleeve per trading
@@ -104,10 +220,33 @@ Examples:
 2026-06-23,002008,buy,brick,9.03,0.10,{"brick_growth":9.03}
 ```
 
+The canonical in-memory path is `Signal -> SignalBook -> BacktestResult ->
+WorkflowResult`. `SignalBook` preserves provenance, score, weight, and metadata
+through execution while exposing the former date-to-symbol-list view only as a
+compatibility interface. Orders, trades, position snapshots, and equity points are
+typed domain records rather than public dictionaries. Detailed contracts and wire
+compatibility are documented in `docs/domain_model.md`.
+
+## Runtime Governance Boundary
+
+The `rquant/` package is framework glue, not a fourth research path. It may resolve
+project-relative paths, dispatch CLI handlers, initialize console/file logging, and
+record execution metadata. It must not calculate factors, labels, strategies,
+predictions, portfolio orders, or performance metrics.
+
+Every real public-CLI execution owns `data/runs/<run-id>/run.json` and `run.log`.
+The run manifest records sanitized arguments, Python and Git identity, explicit
+input fingerprints, declared outputs, downstream manifests, warnings, final status,
+and exit code. Help and `runs list/show` are read-only and do not create runs.
+Failures and interrupts finalize the manifest before returning the original nonzero
+status. Existing domain-specific manifests remain authoritative for their detailed
+resume signatures; the framework manifest references them rather than replacing them.
+
 ## Rules
 
 - Factor research should stay in `factors/`, `reports/factor_tester.py`, and `signals/`.
 - Custom buy rules should stay in `strategies/`.
 - `bdsr_macd_obv` defines BDSR as RCI9 crossing above RCI26; MACD and OBV conditions are evaluated on the same completed daily bar.
-- Factor filter/rank signals enter `backtest/portfolio.py` through the unified schema; custom selectors retain their adapter path.
+- Factor filter/rank and rank-ensemble signals enter `backtest/portfolio.py` through the unified schema; custom selectors retain their adapter path.
+- Walk-forward model scores enter only through `signals.csv`; purge gaps and out-of-sample window boundaries must remain auditable.
 - Do not mix factor IC tests with custom buy-point strategy evaluation.

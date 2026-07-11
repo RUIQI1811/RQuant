@@ -21,6 +21,11 @@ from factors.brick import (  # noqa: E402
     LISTED_BRICK_FACTORS,
     is_brick_factor,
 )
+from factors.custom import (  # noqa: E402
+    CUSTOM_FACTOR_NAMES,
+    is_custom_factor,
+    normalize_custom_factor_name,
+)
 from strategies.preselect import load_config, load_raw_data  # noqa: E402
 
 
@@ -31,11 +36,13 @@ def _parse_windows(values: list[str]) -> tuple[int, ...]:
     return windows
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run FactorTester for one factor.")
+def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--factor",
-        help="Factor name, e.g. brick, brick_growth, momentum_20d, or alpha_001",
+        help=(
+            "Factor name, e.g. custom_001, brick, "
+            "momentum_20d, or alpha_001"
+        ),
     )
     parser.add_argument("--list-factors", action="store_true", help="List built-in named factors")
     parser.add_argument(
@@ -91,6 +98,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run FactorTester for one factor.")
+    return add_arguments(parser)
+
+
 def load_factor_data(args: argparse.Namespace) -> pd.DataFrame:
     """Load a long-format factor file or adapt current raw OHLCV CSVs."""
     if args.factor_file:
@@ -119,19 +131,23 @@ def load_factor_data(args: argparse.Namespace) -> pd.DataFrame:
     )
 
 
-def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
+def run_from_args(args: argparse.Namespace) -> Path | None:
     if args.list_factors:
-        print("\n".join((*LISTED_BRICK_FACTORS, *ALPHA101_NAMES, *GTJA191_NAMES)))
-        return
+        print(
+            "\n".join(
+                (*CUSTOM_FACTOR_NAMES, *LISTED_BRICK_FACTORS, *ALPHA101_NAMES, *GTJA191_NAMES)
+            )
+        )
+        return None
     if not args.factor:
-        parser.error("--factor is required unless --list-factors is used")
+        raise ValueError("--factor is required unless --list-factors is used")
+    if is_custom_factor(args.factor):
+        args.factor = normalize_custom_factor_name(args.factor)
     windows = _parse_windows(args.windows)
     if args.groups not in (5, 10):
-        parser.error("--groups currently supports 5 or 10")
+        raise ValueError("--groups currently supports 5 or 10")
     if not args.top_counts or any(value <= 0 for value in args.top_counts):
-        parser.error("--top-counts must contain positive integers")
+        raise ValueError("--top-counts must contain positive integers")
 
     data = load_factor_data(args)
     config = FactorTesterConfig(
@@ -164,6 +180,16 @@ def main() -> None:
     tester = FactorTester(data, factor_name=args.factor, config=config)
     report_dir = tester.write_reports(args.output)
     print(f"factor report: {report_dir}")
+    return report_dir
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    try:
+        run_from_args(args)
+    except (argparse.ArgumentTypeError, KeyError, ValueError) as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":

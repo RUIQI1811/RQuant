@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Iterable, Optional
+import json
+from typing import Iterable
 
 import pandas as pd
+
+from domain.signals import Signal
 
 
 SIGNAL_COLUMNS = [
@@ -15,24 +17,6 @@ SIGNAL_COLUMNS = [
     "weight",
     "metadata",
 ]
-
-
-@dataclass(frozen=True)
-class Signal:
-    """Unified signal record emitted by factor and custom strategy tracks."""
-
-    date: str
-    symbol: str
-    signal_type: str = "buy"
-    source: str = ""
-    score: Optional[float] = None
-    weight: Optional[float] = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["symbol"] = str(data["symbol"]).zfill(6)
-        return data
 
 
 def signals_to_frame(signals: Iterable[Signal]) -> pd.DataFrame:
@@ -54,6 +38,11 @@ def frame_to_signals(frame: pd.DataFrame) -> list[Signal]:
     signals: list[Signal] = []
     for row in frame.to_dict("records"):
         metadata = row.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
         if not isinstance(metadata, dict):
             metadata = {}
         signals.append(

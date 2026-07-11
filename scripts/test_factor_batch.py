@@ -26,9 +26,11 @@ from reports.gtja191_batch import (  # noqa: E402
     filter_gtja_selection_from_start,
     parse_gtja_selection,
 )
+import factors.operators as factor_operators  # noqa: E402
 from factors.alpha101 import ALPHA101_NAMES, Alpha101, build_alpha101_panels  # noqa: E402
 from factors.catalog import FactorCatalog, load_factor_catalog  # noqa: E402
 from factors.gtja191 import (  # noqa: E402
+    GTJA191,
     GTJA191_NAMES,
     build_gtja191_panels,
     normalize_gtja_name,
@@ -64,16 +66,12 @@ def _gtja_factor_statuses(path: str, factors: tuple[str, ...]) -> dict[str, str]
     for name in factors:
         entry = entries.get(name, default)
         if isinstance(entry, dict):
-            entry = entry.get("status", entry.get("decision", default))
+            entry = entry.get("status", default)
         statuses[name] = str(entry).strip().lower()
     return statuses
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Run resumable, memory-bounded batch tests for factor families.",
-        epilog="GTJA191 reports are written to OUTPUT/leaderboard.csv.",
-    )
+def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--family",
         choices=("alpha101", "gtja191"),
@@ -168,7 +166,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_alpha101(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run resumable, memory-bounded batch tests for factor families.",
+        epilog="GTJA191 reports are written to OUTPUT/leaderboard.csv.",
+    )
+    return add_arguments(parser)
+
+
+def _run_alpha101(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser | None = None,
+) -> int:
     if args.list_factors:
         print("\n".join(ALPHA101_NAMES))
         return 0
@@ -178,7 +187,7 @@ def _run_alpha101(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     try:
         catalog = FactorCatalog() if args.ignore_factor_config else load_factor_catalog(factor_config)
     except (FileNotFoundError, KeyError, ValueError) as exc:
-        parser.error(str(exc))
+        _argument_error(parser, str(exc))
     if args.list_factor_status:
         print("factor,status")
         for factor, status in catalog.status_map().items():
@@ -191,16 +200,17 @@ def _run_alpha101(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         windows = _positive_windows(args.windows)
         top_counts = _positive_windows(args.top_counts)
     except (KeyError, ValueError, argparse.ArgumentTypeError) as exc:
-        parser.error(str(exc))
+        _argument_error(parser, str(exc))
     if args.start_factor:
-        parser.error("--start-factor is only supported with --family gtja191")
+        _argument_error(parser, "--start-factor is only supported with --family gtja191")
     if not factors:
-        parser.error(
+        _argument_error(
+            parser,
             "factor selection is empty after exclusions and lifecycle filtering; "
             "use --ignore-factor-config for a one-off override"
         )
     if args.max_symbols is not None and args.max_symbols <= 0:
-        parser.error("--max-symbols must be positive")
+        _argument_error(parser, "--max-symbols must be positive")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     selected_statuses = catalog.status_map(factors)
@@ -248,6 +258,7 @@ def _run_alpha101(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         [
             Path(__file__),
             Path(sys.modules[Alpha101.__module__].__file__),
+            Path(factor_operators.__file__),
             Path(sys.modules[FactorTester.__module__].__file__),
             ROOT / "reports" / "alpha101_batch.py",
         ]
@@ -273,7 +284,10 @@ def _run_alpha101(args: argparse.Namespace, parser: argparse.ArgumentParser) -> 
     return 0
 
 
-def _run_gtja191(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+def _run_gtja191(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser | None = None,
+) -> int:
     if args.list_factors:
         print("\n".join(GTJA191_NAMES))
         return 0
@@ -285,7 +299,7 @@ def _run_gtja191(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         windows = _positive_windows(args.windows)
         top_counts = _positive_windows(args.top_counts)
     except (KeyError, ValueError, argparse.ArgumentTypeError) as exc:
-        parser.error(str(exc))
+        _argument_error(parser, str(exc))
     statuses = _gtja_factor_statuses(factor_config, factors)
     if args.list_factor_status:
         print("factor,status")
@@ -296,9 +310,12 @@ def _run_gtja191(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         factors = tuple(name for name in factors if statuses[name] in ("active", "watch"))
     factors = filter_gtja_selection_from_start(factors, args.start_factor)
     if not factors:
-        parser.error("factor selection is empty after exclusions, lifecycle filtering, and start-factor")
+        _argument_error(
+            parser,
+            "factor selection is empty after exclusions, lifecycle filtering, and start-factor",
+        )
     if args.max_symbols is not None and args.max_symbols <= 0:
-        parser.error("--max-symbols must be positive")
+        _argument_error(parser, "--max-symbols must be positive")
 
     if args.max_symbols:
         selected_symbols = sorted(path.stem for path in Path(args.data).glob("*.csv"))[: args.max_symbols]
@@ -322,11 +339,22 @@ def _run_gtja191(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         fail_fast=args.fail_fast,
         show_progress=not args.no_progress,
     )
+    implementation_signature = files_signature(
+        [
+            Path(__file__),
+            Path(sys.modules[GTJA191.__module__].__file__),
+            Path(factor_operators.__file__),
+            Path(sys.modules[FactorTester.__module__].__file__),
+            ROOT / "reports" / "alpha101_batch.py",
+            ROOT / "reports" / "gtja191_batch.py",
+        ]
+    )
     result = GTJA191BatchRunner(
         panels,
         factors=factors,
         output_dir=output,
         config=config,
+        implementation_signature=implementation_signature,
         factor_statuses={normalize_gtja_name(name): status for name, status in statuses.items()},
     ).run()
     counts = result.status["status"].value_counts().to_dict()
@@ -337,12 +365,26 @@ def _run_gtja191(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
     return 0
 
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
+def run_from_args(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser | None = None,
+) -> int:
     if args.family == "gtja191":
         return _run_gtja191(args, parser)
     return _run_alpha101(args, parser)
+
+
+def _argument_error(parser: argparse.ArgumentParser | None, message: str) -> None:
+    if parser is not None:
+        parser.error(message)
+    raise ValueError(message)
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return run_from_args(args, parser=parser)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from domain.values import normalize_symbol
+
 
 REQUIRED_DAILY_COLUMNS = ("date", "open", "high", "low", "close", "volume")
 PRICE_COLUMNS = ("open", "high", "low", "close")
@@ -21,7 +23,7 @@ class StockPoolConfig:
 
 
 def normalize_code(code: object) -> str:
-    return str(code).strip().split(".")[0].zfill(6)
+    return normalize_symbol(code)
 
 
 def board_of_code(code: str) -> str:

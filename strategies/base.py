@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import pandas as pd
+from domain.signals import SignalBook
 
 
 class StrategySignalEngine(Protocol):
@@ -10,6 +10,6 @@ class StrategySignalEngine(Protocol):
 
     source: str
 
-    def generate_signals(self) -> pd.DataFrame:
-        """Return unified signal DataFrame columns defined in signals.schema."""
+    def generate_signal_book(self) -> SignalBook:
+        """Return canonical strategy signals."""
         ...

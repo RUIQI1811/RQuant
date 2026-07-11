@@ -16,7 +16,8 @@ gemini_review.py
 
 输出：
     ./data/review/{pick_date}/{code}.json   每支股票的评分 JSON
-    ./data/review/{pick_date}/suggestion.json  汇总推荐建议
+    ./data/review/{pick_date}/suggestion.json  研究候选汇总
+    ./data/review/{pick_date}/run_manifest.json  可恢复运行清单
 """
 
 import argparse
@@ -30,7 +31,10 @@ from google import genai
 from google.genai import types
 import yaml
 
-from base_reviewer import BaseReviewer
+try:
+    from .base_reviewer import BaseReviewer, ReviewRunIncomplete
+except ImportError:  # Direct script execution: python agent/gemini_review.py
+    from base_reviewer import BaseReviewer, ReviewRunIncomplete
 
 # ────────────────────────────────────────────────
 # 配置加载
@@ -50,15 +54,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_retries": 3,
     "retry_base_delay": 10,
     "request_delay": 5,
-    "skip_existing": False,
+    "skip_existing": True,
     "suggest_min_score": 4.0,
 }
 
 
-def _load_dotenv(env_path: Path = _ROOT / ".env") -> None:
-    """Load KEY=VALUE lines from .env without overriding existing env vars."""
+def _read_dotenv_value(
+    key_name: str,
+    env_path: Path = _ROOT / ".env",
+) -> str | None:
+    """Read one non-empty .env value without mutating process environment."""
     if not env_path.exists():
-        return
+        return None
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -66,8 +73,9 @@ def _load_dotenv(env_path: Path = _ROOT / ".env") -> None:
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        if key == key_name and value:
+            return value
+    return None
 
 
 def _resolve_cfg_path(path_like: str | Path, base_dir: Path = _ROOT) -> Path:
@@ -98,11 +106,11 @@ class GeminiReviewer(BaseReviewer):
     def __init__(self, config):
         super().__init__(config)
         
-        _load_dotenv()
-        api_key = os.environ.get("GEMINI_API_KEY", "")
+        api_key = os.environ.get("GEMINI_API_KEY") or _read_dotenv_value("GEMINI_API_KEY")
         if not api_key:
-            print("[ERROR] 未找到 GEMINI_API_KEY，请设置环境变量或写入项目根目录 .env。", file=sys.stderr)
-            sys.exit(1)
+            raise RuntimeError(
+                "未找到 GEMINI_API_KEY，请设置环境变量或写入项目根目录 .env。"
+            )
             
         self.client = genai.Client(api_key=api_key)
 
@@ -136,6 +144,10 @@ class GeminiReviewer(BaseReviewer):
         models = [primary_model] + [m for m in retry_models if m != primary_model]
         max_retries = int(self.config.get("max_retries", 3))
         retry_base_delay = float(self.config.get("retry_base_delay", 10))
+        if max_retries <= 0:
+            raise ValueError("max_retries must be positive")
+        if retry_base_delay < 0:
+            raise ValueError("retry_base_delay must be non-negative")
 
         last_error: Exception | None = None
         response = None
@@ -177,19 +189,42 @@ class GeminiReviewer(BaseReviewer):
         return result
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Gemini 图表复评")
     parser.add_argument(
         "--config",
         default=str(_DEFAULT_CONFIG_PATH),
         help="配置文件路径（默认 config/gemini_review.yaml）",
     )
-    args = parser.parse_args()
+    resume_group = parser.add_mutually_exclusive_group()
+    resume_group.add_argument(
+        "--resume",
+        action="store_true",
+        help="复用签名匹配的逐股结果（覆盖配置为 true）",
+    )
+    resume_group.add_argument(
+        "--force",
+        action="store_true",
+        help="忽略已有逐股结果并重新复评（覆盖配置为 false）",
+    )
+    args = parser.parse_args(argv)
 
-    config = load_config(Path(args.config))
-    reviewer = GeminiReviewer(config)
-    reviewer.run()
+    try:
+        config = load_config(Path(args.config))
+        if args.resume:
+            config["skip_existing"] = True
+        elif args.force:
+            config["skip_existing"] = False
+        reviewer = GeminiReviewer(config)
+        reviewer.run()
+    except ReviewRunIncomplete as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"[ERROR] {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

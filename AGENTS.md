@@ -42,11 +42,19 @@ date, symbol, signal_type, source, score, weight, metadata
 - 因子使用 `signals/factor_adapters.py` 转换为排名信号。
 - `symbol` 始终按六位字符串处理，不得转换为会丢失前导零的整数。
 - 详细映射以 `docs/architecture.md` 为准。
+- 跨模块的新代码应使用 `domain/` 中的 `Symbol`、`Signal`、`SignalBook`、执行记录、
+  `BacktestResult`、`WorkflowResult` 和 `ArtifactRef`。DataFrame 与旧字典只允许保留在
+  I/O/兼容边界，不能在进入下一领域层前丢弃 `source`、`score`、`weight` 或 `metadata`。
+- 领域模型及兼容规则以 `docs/domain_model.md` 为准；不得为了“统一”合并各因子面板、
+  模型内部状态或 staggered cohort 内部状态。
 
 ## 主要入口与数据流
 
-- `run_all.py`：日常全流程编排，按顺序运行抓取、初选、图表导出、Gemini 复评和结果打印；子步骤失败时应立即终止。
-- `scripts/quant_cli.py`：研究工作流的统一 CLI，对外命令包括 `preselect`、`signal-returns`、`portfolio-backtest` 和 `research-report`。
+- `run_all.py`：日常全流程编排，按顺序运行统一 CLI 抓取、初选、图表导出、Gemini 复评和研究候选展示；子步骤或最终产物校验失败时立即非零退出，不得把复评候选表述为买入建议。
+- `python -m rquant` / `rquant`：研究工作流的正式 CLI，覆盖 `doctor`、`fetch-data`、`factor-test`、`factor-batch`、`preselect`、因子组合、`train-model`、`signal-backtest`、`portfolio-backtest`、`research-report` 和只读运行查询。
+- `rquant/`：只负责项目路径、CLI 调度、日志和 `data/runs/<run-id>/run.json`；不得承载因子、策略、ML 或回测业务逻辑，也不得在清单中记录密钥值。
+- `scripts/quant_cli.py`：迁移期兼容入口，必须复用正式入口的运行治理和原有 handler，不得形成第二套业务实现。
+- `python -m rquant doctor`：只读检查解释器、依赖、配置、密钥存在性和本地行情结构；不得输出密钥值，只有必需项失败才返回非零退出码。
 - `config/*.yaml`：运行参数的主要入口。参数不应无理由硬编码在业务逻辑中。
 - `data/raw/`：原始日线数据。
 - `data/candidates/`：初选结果。
@@ -68,7 +76,8 @@ date, symbol, signal_type, source, score, weight, metadata
 3. **默认交付 CLI 和可审计输出**
    - 研究能力应先提供可重复的命令行入口、结构化输出和明确的输出路径。
    - 除非任务明确要求，不将 Streamlit 或其他 UI 作为新能力的唯一入口。
-   - 长时间任务应支持断点续跑或逐步落盘。Gemini 复评需保留 `skip_existing` 能力。
+   - 长时间任务应支持断点续跑或逐步落盘。Gemini 复评只复用模型、提示词、日期和图表签名匹配的结果，逐股原子写入并持续维护 manifest；部分失败必须非零退出。
+   - Tushare 批量抓取逐股维护 `_fetch_manifest.json`；恢复时必须匹配日期、输出目录和股票池签名，部分失败保留已完成 CSV 但命令必须非零退出。
 4. **文档与行为同步**
    - 如果改变了 CLI、配置键、输入格式、输出路径或研究流程，同步更新 `README.md`。
    - 如果改变了模块责任或信号路由，同步更新 `docs/architecture.md`。
@@ -79,6 +88,7 @@ date, symbol, signal_type, source, score, weight, metadata
 与信号、因子、收益或组合回测有关的修改，必须明确检查：
 
 - 不使用信号时点之后才可得的数据，防止未来函数和幸存者偏差。
+- 历史候选图必须在读入后截断到 `pick_date`，且最后一根 bar 必须正好是候选日；图表 manifest partial 时不得进入 Gemini 复评。
 - `signal_close` 与 `next_open` 的价格时点语义不得混淆。
 - 组合回测保留现金、持仓、整手买入、最大持仓数、单票仓位和交易费用约束。
 - 保留涨停不买、跌停不卖、停牌不交易和 A 股 T+1 约束。
@@ -106,9 +116,12 @@ date, symbol, signal_type, source, score, weight, metadata
 python -m pip install -r requirements.txt
 ```
 
+依赖版本以 `requirements.txt` 和 `requirements-ml.txt` 为唯一来源；更新固定版本后必须运行 `doctor` 的真实导入检查和全量测试。
+
 快速检查 CLI 是否可加载：
 
 ```bash
+python -m rquant --help
 python scripts/quant_cli.py --help
 ```
 

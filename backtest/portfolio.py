@@ -12,6 +12,19 @@ import pandas as pd
 import numpy as np
 from tqdm.auto import tqdm
 
+from domain.artifacts import WorkflowResult
+from domain.execution import (
+    BacktestResult as PortfolioBacktestResult,
+    BacktestSummary,
+    EquityPoint,
+    OrderIntent,
+    OrderResult,
+    Position,
+    PositionSnapshot,
+    Trade,
+)
+from domain.signals import Signal, SignalBook
+
 from reports.signal_returns import (
     BUY_MODE_NEXT_OPEN,
     BUY_MODE_SIGNAL_CLOSE,
@@ -62,29 +75,6 @@ class PortfolioSettings:
     lot_size: int = 100
 
 
-@dataclass(frozen=True)
-class PortfolioBacktestResult:
-    initial_cash: float
-    final_cash: float
-    total_return: float
-    trades: List[dict]
-    orders: List[dict]
-    positions: List[dict]
-    equity_curve: List[dict]
-    summary: dict
-
-
-@dataclass
-class Position:
-    code: str
-    shares: int
-    entry_date: str
-    entry_price: float
-    entry_value: float
-    signal_date: str
-    hold_days: int
-
-
 @dataclass
 class CohortSleeve:
     """One independently funded slot in a staggered holding-period portfolio."""
@@ -96,6 +86,25 @@ class CohortSleeve:
 
 def _date_str(value: object) -> str:
     return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def _coerce_signal_book(
+    picks_by_date: Dict[pd.Timestamp, List[str]] | SignalBook,
+    *,
+    source: str,
+) -> SignalBook:
+    if isinstance(picks_by_date, SignalBook):
+        return picks_by_date
+    signals: list[Signal] = []
+    for date, values in picks_by_date.items():
+        for value in values:
+            if isinstance(value, Signal):
+                signals.append(value)
+            else:
+                signals.append(
+                    Signal(date=_date_str(date), symbol=str(value), source=source)
+                )
+    return SignalBook(signals)
 
 
 def _row_on_or_none(df: pd.DataFrame, date: pd.Timestamp) -> Optional[pd.Series]:
@@ -320,7 +329,7 @@ def _price_points(
 def run_portfolio_from_prepared(
     *,
     prepared: Dict[str, pd.DataFrame],
-    picks_by_date: Dict[pd.Timestamp, List[str]],
+    picks_by_date: Dict[pd.Timestamp, List[str]] | SignalBook,
     settings: PortfolioSettings,
 ) -> PortfolioBacktestResult:
     if settings.hold_days <= 0:
@@ -328,15 +337,17 @@ def run_portfolio_from_prepared(
     if settings.buy_mode not in VALID_BUY_MODES:
         raise ValueError(f"buy_mode must be one of {sorted(VALID_BUY_MODES)}")
 
+    signal_book = _coerce_signal_book(picks_by_date, source=settings.strategy)
     cash = float(settings.initial_cash)
     trades: List[dict] = []
 
-    for signal_date in sorted(picks_by_date):
+    for signal_date in sorted(signal_book):
         signal_ts = pd.to_datetime(signal_date)
         stock_returns: List[float] = []
         details: List[dict] = []
 
-        for code in sorted(picks_by_date[signal_date]):
+        for signal in sorted(signal_book.signals_for(signal_date), key=lambda item: item.symbol):
+            code = signal.symbol
             df = prepared.get(code)
             if df is None or df.empty:
                 continue
@@ -369,6 +380,10 @@ def run_portfolio_from_prepared(
                     "exit_date": exit_date,
                     "exit_price": exit_price,
                     "return": stock_return,
+                    "source": signal.source,
+                    "score": signal.score,
+                    "weight": signal.weight,
+                    "metadata": signal.metadata,
                 }
             )
 
@@ -389,6 +404,7 @@ def run_portfolio_from_prepared(
                 "basket_return": basket_return,
                 "end_cash": cash,
                 "details": details,
+                "source": settings.strategy,
             }
         )
 
@@ -428,7 +444,7 @@ def run_portfolio_from_prepared(
 def run_realistic_portfolio_from_prepared(
     *,
     prepared: Dict[str, pd.DataFrame],
-    picks_by_date: Dict[pd.Timestamp, List[str]],
+    picks_by_date: Dict[pd.Timestamp, List[str]] | SignalBook,
     settings: PortfolioSettings,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -490,16 +506,22 @@ def run_realistic_portfolio_from_prepared(
     for idx, date in enumerate(dates[:-1]):
         date_to_next[date] = dates[idx + 1]
 
-    pending_buys: dict[pd.Timestamp, list[tuple[str, str]]] = {}
-    for signal_date, codes in picks_by_date.items():
+    signal_book = _coerce_signal_book(picks_by_date, source=settings.strategy)
+    pending_buys: dict[pd.Timestamp, list[OrderIntent]] = {}
+    for signal_date in signal_book:
         signal_ts = pd.to_datetime(signal_date)
         buy_date = date_to_next.get(signal_ts)
         if buy_date is None:
             continue
         # Preserve signal priority (for example factor rank) while removing
         # duplicates. Sorting by symbol would silently discard ranking intent.
-        for code in dict.fromkeys(codes):
-            pending_buys.setdefault(buy_date, []).append((code, _date_str(signal_ts)))
+        unique: dict[str, Signal] = {}
+        for signal in signal_book.signals_for(signal_ts):
+            unique.setdefault(signal.symbol, signal)
+        pending_buys.setdefault(buy_date, []).extend(
+            OrderIntent(signal=signal, execution_date=_date_str(buy_date))
+            for signal in unique.values()
+        )
 
     cash = float(settings.initial_cash)
     positions: Dict[str, Position] = {}
@@ -529,6 +551,10 @@ def run_realistic_portfolio_from_prepared(
                         "price": "",
                         "shares": position.shares,
                         "cash_delta": 0.0,
+                        "source": position.source,
+                        "score": position.score,
+                        "weight": position.weight,
+                        "metadata": position.metadata,
                     }
                 )
                 continue
@@ -546,6 +572,10 @@ def run_realistic_portfolio_from_prepared(
                         "price": "",
                         "shares": position.shares,
                         "cash_delta": 0.0,
+                        "source": position.source,
+                        "score": position.score,
+                        "weight": position.weight,
+                        "metadata": position.metadata,
                     }
                 )
                 continue
@@ -570,6 +600,9 @@ def run_realistic_portfolio_from_prepared(
                 "exit_value": proceeds,
                 "return": pnl / position.entry_value if position.entry_value else float("nan"),
                 "pnl": pnl,
+                "source": position.source,
+                "score": position.score,
+                "weight": position.weight,
             }
             trades.append(trade)
             orders.append(
@@ -583,12 +616,19 @@ def run_realistic_portfolio_from_prepared(
                     "price": price,
                     "shares": position.shares,
                     "cash_delta": proceeds,
+                    "source": position.source,
+                    "score": position.score,
+                    "weight": position.weight,
+                    "metadata": position.metadata,
                 }
             )
             del positions[code]
 
         # Then buy signals from the prior trading day.
-        for code, signal_date in pending_buys.get(date, []):
+        for intent in pending_buys.get(date, []):
+            signal = intent.signal
+            code = signal.symbol
+            signal_date = signal.date
             if code in positions:
                 orders.append(
                     {
@@ -601,6 +641,10 @@ def run_realistic_portfolio_from_prepared(
                         "price": "",
                         "shares": 0,
                         "cash_delta": 0.0,
+                        "source": signal.source,
+                        "score": signal.score,
+                        "weight": signal.weight,
+                        "metadata": signal.metadata,
                     }
                 )
                 continue
@@ -616,6 +660,10 @@ def run_realistic_portfolio_from_prepared(
                         "price": "",
                         "shares": 0,
                         "cash_delta": 0.0,
+                        "source": signal.source,
+                        "score": signal.score,
+                        "weight": signal.weight,
+                        "metadata": signal.metadata,
                     }
                 )
                 continue
@@ -633,6 +681,10 @@ def run_realistic_portfolio_from_prepared(
                         "price": "",
                         "shares": 0,
                         "cash_delta": 0.0,
+                        "source": signal.source,
+                        "score": signal.score,
+                        "weight": signal.weight,
+                        "metadata": signal.metadata,
                     }
                 )
                 continue
@@ -663,19 +715,27 @@ def run_realistic_portfolio_from_prepared(
                         "price": price,
                         "shares": 0,
                         "cash_delta": 0.0,
+                        "source": signal.source,
+                        "score": signal.score,
+                        "weight": signal.weight,
+                        "metadata": signal.metadata,
                     }
                 )
                 continue
 
             cash -= total_cost
             positions[code] = Position(
-                code=code,
+                symbol=code,
                 shares=shares,
                 entry_date=date_label,
                 entry_price=price,
                 entry_value=total_cost,
                 signal_date=signal_date,
                 hold_days=settings.hold_days,
+                source=signal.source,
+                score=signal.score,
+                weight=signal.weight,
+                metadata=signal.metadata,
             )
             orders.append(
                 {
@@ -688,6 +748,10 @@ def run_realistic_portfolio_from_prepared(
                     "price": price,
                     "shares": shares,
                     "cash_delta": -total_cost,
+                    "source": signal.source,
+                    "score": signal.score,
+                    "weight": signal.weight,
+                    "metadata": signal.metadata,
                 }
             )
 
@@ -743,6 +807,9 @@ def run_realistic_portfolio_from_prepared(
                 "entry_value": position.entry_value,
                 "signal_date": position.signal_date,
                 "market_value": _position_market_value(position, prepared, dates[-1]),
+                "source": position.source,
+                "score": position.score,
+                "weight": position.weight,
             }
             for position in sorted(positions.values(), key=lambda item: item.code)
         ],
@@ -754,7 +821,7 @@ def run_realistic_portfolio_from_prepared(
 def run_staggered_cohort_portfolio_from_prepared(
     *,
     prepared: Dict[str, pd.DataFrame],
-    picks_by_date: Dict[pd.Timestamp, List[str]],
+    picks_by_date: Dict[pd.Timestamp, List[str]] | SignalBook,
     settings: PortfolioSettings,
     cohort_count: int,
     start_date: Optional[str] = None,
@@ -781,12 +848,22 @@ def run_staggered_cohort_portfolio_from_prepared(
 
     date_position = {date: index for index, date in enumerate(dates)}
     date_to_next = {date: dates[index + 1] for index, date in enumerate(dates[:-1])}
-    pending_buys: dict[pd.Timestamp, tuple[list[str], str]] = {}
-    for signal_date, codes in picks_by_date.items():
+    signal_book = _coerce_signal_book(picks_by_date, source=settings.strategy)
+    pending_buys: dict[pd.Timestamp, tuple[list[OrderIntent], str]] = {}
+    for signal_date in signal_book:
         signal_ts = pd.to_datetime(signal_date)
         buy_date = date_to_next.get(signal_ts)
         if buy_date is not None:
-            pending_buys[buy_date] = (list(dict.fromkeys(codes)), _date_str(signal_ts))
+            unique: dict[str, Signal] = {}
+            for signal in signal_book.signals_for(signal_ts):
+                unique.setdefault(signal.symbol, signal)
+            pending_buys[buy_date] = (
+                [
+                    OrderIntent(signal=signal, execution_date=_date_str(buy_date))
+                    for signal in unique.values()
+                ],
+                _date_str(signal_ts),
+            )
 
     sleeve_cash = float(settings.initial_cash) / cohort_count
     sleeves = [
@@ -827,6 +904,10 @@ def run_staggered_cohort_portfolio_from_prepared(
                             reason=reason,
                             signal_date=position.signal_date,
                             shares=position.shares,
+                            source=position.source,
+                            score=position.score,
+                            weight=position.weight,
+                            metadata=position.metadata,
                         )
                     )
                     continue
@@ -852,6 +933,9 @@ def run_staggered_cohort_portfolio_from_prepared(
                         "exit_value": proceeds,
                         "return": pnl / position.entry_value if position.entry_value else float("nan"),
                         "pnl": pnl,
+                        "source": position.source,
+                        "score": position.score,
+                        "weight": position.weight,
                     }
                 )
                 orders.append(
@@ -866,6 +950,10 @@ def run_staggered_cohort_portfolio_from_prepared(
                         price=price,
                         shares=position.shares,
                         cash_delta=proceeds,
+                        source=position.source,
+                        score=position.score,
+                        weight=position.weight,
+                        metadata=position.metadata,
                     )
                 )
                 del sleeve.positions[code]
@@ -873,7 +961,9 @@ def run_staggered_cohort_portfolio_from_prepared(
         scheduled = sleeves[day_index % cohort_count]
         pending = pending_buys.get(date)
         if pending is not None:
-            codes, signal_date = pending
+            pending_intents, signal_date = pending
+            pending_signals = [intent.signal for intent in pending_intents]
+            signal_by_code = {signal.symbol: signal for signal in pending_signals}
             if scheduled.positions:
                 orders.append(
                     _cohort_order(
@@ -884,11 +974,12 @@ def run_staggered_cohort_portfolio_from_prepared(
                         status="skipped",
                         reason="cohort_exit_blocked",
                         signal_date=signal_date,
+                        signal=pending_signals[0] if pending_signals else None,
                     )
                 )
             else:
                 selected, target_cash, rejected = _cohort_buy_candidates(
-                    codes,
+                    [signal.symbol for signal in pending_signals],
                     prepared=prepared,
                     date=date,
                     sleeve_cash=scheduled.cash,
@@ -896,6 +987,7 @@ def run_staggered_cohort_portfolio_from_prepared(
                     lot_size=settings.lot_size,
                 )
                 for code, reason in rejected:
+                    signal = signal_by_code[code]
                     orders.append(
                         _cohort_order(
                             date=date_label,
@@ -905,9 +997,11 @@ def run_staggered_cohort_portfolio_from_prepared(
                             status="blocked" if reason in {"suspended", "limit_up", "missing_bar"} else "skipped",
                             reason=reason,
                             signal_date=signal_date,
+                            signal=signal,
                         )
                     )
                 for code in selected:
+                    signal = signal_by_code[code]
                     row = _row_on_or_none(prepared.get(code), date)
                     price = _execution_price(row, settings.buy_mode, side="buy")
                     shares = _shares_for_cash(
@@ -928,18 +1022,23 @@ def run_staggered_cohort_portfolio_from_prepared(
                                 reason="insufficient_sleeve_cash",
                                 signal_date=signal_date,
                                 price=price,
+                                signal=signal,
                             )
                         )
                         continue
                     scheduled.cash -= total_cost
                     scheduled.positions[code] = Position(
-                        code=code,
+                        symbol=code,
                         shares=shares,
                         entry_date=date_label,
                         entry_price=price,
                         entry_value=total_cost,
                         signal_date=signal_date,
                         hold_days=settings.hold_days,
+                        source=signal.source,
+                        score=signal.score,
+                        weight=signal.weight,
+                        metadata=signal.metadata,
                     )
                     orders.append(
                         _cohort_order(
@@ -953,6 +1052,7 @@ def run_staggered_cohort_portfolio_from_prepared(
                             price=price,
                             shares=shares,
                             cash_delta=-total_cost,
+                            signal=signal,
                         )
                     )
 
@@ -989,6 +1089,9 @@ def run_staggered_cohort_portfolio_from_prepared(
             "entry_value": position.entry_value,
             "signal_date": position.signal_date,
             "market_value": _position_market_value(position, prepared, dates[-1]),
+            "source": position.source,
+            "score": position.score,
+            "weight": position.weight,
         }
         for sleeve in sleeves
         for position in sorted(sleeve.positions.values(), key=lambda item: item.code)
@@ -1079,19 +1182,33 @@ def _cohort_order(
     price: object = "",
     shares: int = 0,
     cash_delta: float = 0.0,
-) -> dict:
-    return {
-        "date": date,
-        "cohort_id": cohort_id,
-        "code": code,
-        "side": side,
-        "status": status,
-        "reason": reason,
-        "signal_date": signal_date,
-        "price": price,
-        "shares": shares,
-        "cash_delta": cash_delta,
-    }
+    signal: Signal | None = None,
+    source: str = "",
+    score: float | None = None,
+    weight: float | None = None,
+    metadata: dict | None = None,
+) -> OrderResult:
+    if signal is not None:
+        source = signal.source
+        score = signal.score
+        weight = signal.weight
+        metadata = signal.metadata
+    return OrderResult(
+        date=date,
+        cohort_id=cohort_id,
+        symbol=code or None,
+        side=side,
+        status=status,
+        reason=reason,
+        signal_date=signal_date,
+        price=price,
+        shares=shares,
+        cash_delta=cash_delta,
+        source=source,
+        score=score,
+        weight=weight,
+        metadata=dict(metadata or {}),
+    )
 
 
 def _empty_cohort_result(
@@ -1257,7 +1374,7 @@ def _write_equity_curve_html(path: Path, rows: List[dict], summary: dict) -> Non
 def write_portfolio_backtest_outputs(
     result: PortfolioBacktestResult,
     output_dir: str | Path,
-) -> dict[str, Path | PortfolioBacktestResult]:
+) -> WorkflowResult[PortfolioBacktestResult]:
     """Write the standard auditable portfolio-backtest artifact set."""
 
     resolved_output_dir = Path(output_dir)
@@ -1275,19 +1392,26 @@ def write_portfolio_backtest_outputs(
     _write_equity_curve_csv(equity_curve_path, result.equity_curve)
     _write_equity_curve_html(equity_curve_html_path, result.equity_curve, result.summary)
     with summary_path.open("w", encoding="utf-8") as f:
-        json.dump(result.summary, f, ensure_ascii=False, indent=2)
+        json.dump(result.summary.to_dict(), f, ensure_ascii=False, indent=2)
     with orders_json_path.open("w", encoding="utf-8") as f:
-        json.dump({"orders": result.orders}, f, ensure_ascii=False, indent=2)
-    return {
-        "result": result,
-        "trades_path": trades_path,
-        "orders_path": orders_path,
-        "orders_json_path": orders_json_path,
-        "positions_path": positions_path,
-        "summary_path": summary_path,
-        "equity_curve_path": equity_curve_path,
-        "equity_curve_html_path": equity_curve_html_path,
-    }
+        json.dump(
+            {"orders": [order.to_legacy_dict() for order in result.orders]},
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    return WorkflowResult.from_mapping(
+        {
+            "result": result,
+            "trades_path": trades_path,
+            "orders_path": orders_path,
+            "orders_json_path": orders_json_path,
+            "positions_path": positions_path,
+            "summary_path": summary_path,
+            "equity_curve_path": equity_curve_path,
+            "equity_curve_html_path": equity_curve_html_path,
+        }
+    )
 
 
 def run_portfolio_backtest(
@@ -1305,7 +1429,7 @@ def run_portfolio_backtest(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     output_dir: Optional[str] = None,
-) -> dict:
+) -> WorkflowResult[PortfolioBacktestResult]:
     cfg = load_config(config_path)
     global_cfg = cfg.get("global", {})
     resolved_data_dir = str(_resolve_cfg_path(data_dir or global_cfg.get("data_dir", "./data/raw")))

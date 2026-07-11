@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from domain.factors import FactorEvaluationResult
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reports.factor_tester import (
@@ -47,6 +49,19 @@ def _test_config(**kwargs):
 
 
 class FactorTesterTest(unittest.TestCase):
+    def test_run_all_returns_typed_factor_evaluation_with_mapping_compatibility(self):
+        tester = FactorTester(
+            _sample_factor_frame(),
+            factor_name="test_factor",
+            config=_test_config(forward_return_windows=(1,), groups=2),
+        )
+
+        result = tester.run_all()
+
+        self.assertIsInstance(result, FactorEvaluationResult)
+        self.assertIs(result.summary, result["summary"])
+        self.assertIn("rank_ic", result)
+
     def test_ic_calculation_is_correct(self):
         tester = FactorTester(
             _sample_factor_frame(),
@@ -106,6 +121,107 @@ class FactorTesterTest(unittest.TestCase):
         summary = top_n_summary.set_index("top_n")
         self.assertAlmostEqual(summary.loc[1, "mean_forward_return"], 0.04)
         self.assertEqual(summary.loc[1, "average_selected_count"], 1.0)
+
+    def test_tradable_top_n_is_long_only_and_uses_daily_returns(self):
+        rows = []
+        dates = pd.date_range("2026-01-01", periods=3, freq="B")
+        for date_index, date in enumerate(dates):
+            for symbol, factor in [
+                ("000001", 1.0),
+                ("000002", 2.0),
+                ("000003", 3.0),
+                ("000004", 4.0),
+            ]:
+                close = 11.0 if date_index == 2 and factor == 4.0 else 10.0
+                rows.append(
+                    {
+                        "date": date,
+                        "symbol": symbol,
+                        "factor_value": factor,
+                        "close": close,
+                    }
+                )
+        tester = FactorTester(
+            pd.DataFrame(rows),
+            factor_name="test_factor",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                top_n_counts=(1,),
+            ),
+        )
+
+        result = tester.tradable_top_n_test()
+
+        self.assertEqual(result["top_n"].tolist(), [1])
+        self.assertAlmostEqual(result.loc[0, "gross_return"], 0.10)
+        self.assertAlmostEqual(result.loc[0, "net_return"], 0.10)
+        self.assertAlmostEqual(result.loc[0, "tradable_top_n_cum_nav"], 1.10)
+
+    def test_tradable_top_n_blocks_limit_up_entries(self):
+        rows = []
+        dates = pd.date_range("2026-01-01", periods=3, freq="B")
+        for date_index, date in enumerate(dates):
+            for symbol, factor in [
+                ("000001", 1.0),
+                ("000002", 2.0),
+                ("000003", 3.0),
+                ("000004", 4.0),
+            ]:
+                rows.append(
+                    {
+                        "date": date,
+                        "symbol": symbol,
+                        "factor_value": factor,
+                        "close": 10.0,
+                        "is_limit_up": date_index == 1 and factor == 4.0,
+                    }
+                )
+        tester = FactorTester(
+            pd.DataFrame(rows),
+            factor_name="test_factor",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                top_n_counts=(1,),
+            ),
+        )
+
+        self.assertTrue(tester.tradable_top_n_test().empty)
+
+    def test_tradable_top_quantile_uses_highest_factor_group(self):
+        rows = []
+        dates = pd.date_range("2026-01-01", periods=3, freq="B")
+        for date_index, date in enumerate(dates):
+            for symbol, factor in [
+                ("000001", 1.0),
+                ("000002", 2.0),
+                ("000003", 3.0),
+                ("000004", 4.0),
+            ]:
+                close = 10.0
+                if date_index == 2 and factor >= 3.0:
+                    close = 10.5
+                rows.append(
+                    {
+                        "date": date,
+                        "symbol": symbol,
+                        "factor_value": factor,
+                        "close": close,
+                    }
+                )
+        tester = FactorTester(
+            pd.DataFrame(rows),
+            factor_name="test_factor",
+            config=_test_config(forward_return_windows=(1,), groups=2),
+        )
+
+        result = tester.tradable_top_quantile_test()
+
+        self.assertEqual(result["top_quantile"].tolist(), [0.5])
+        self.assertEqual(result["selected_count"].tolist(), [2])
+        self.assertAlmostEqual(result.loc[0, "gross_return"], 0.05)
+        self.assertAlmostEqual(result.loc[0, "tradable_top_quantile_cum_nav"], 1.05)
 
     def test_long_short_nav_uses_daily_returns_and_staggered_holdings(self):
         rows = []

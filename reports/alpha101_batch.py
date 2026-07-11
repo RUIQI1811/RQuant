@@ -165,7 +165,7 @@ def directory_signature(data_dir: str | Path, metadata_path: str | Path | None =
 
 
 def files_signature(paths: Iterable[str | Path]) -> str:
-    """Hash implementation files which can alter Alpha101 results."""
+    """Hash implementation files which can alter factor results."""
 
     digest = hashlib.sha256()
     for path_like in sorted((Path(path).resolve() for path in paths), key=str):
@@ -562,6 +562,8 @@ def build_leaderboard(
         ic = pd.read_csv(ic_path)
         group = _read_csv(factor_dir / "group_summary.csv")
         top_n = _read_csv(factor_dir / "top_n_summary.csv")
+        tradable_top_n = _read_csv(factor_dir / "tradable_top_n.csv")
+        tradable_top_quantile = _read_csv(factor_dir / "tradable_top_quantile.csv")
         neutralized = _read_csv(factor_dir / "neutralized_ic_summary.csv")
         sample = _read_csv(factor_dir / "sample_performance.csv")
         tradable = _read_csv(factor_dir / "tradable_long_short.csv")
@@ -594,6 +596,31 @@ def build_leaderboard(
                         f"top_{top_count}_selected_count": top_row.get("average_selected_count"),
                     }
                 )
+        tradable_top_n_by_window: dict[int, dict[str, object]] = {}
+        if {"window", "top_n", "date"}.issubset(tradable_top_n.columns):
+            latest_top_n = (
+                tradable_top_n.sort_values("date").groupby(["window", "top_n"]).tail(1)
+            )
+            for _, top_row in latest_top_n.iterrows():
+                window_key = int(top_row["window"])
+                top_count = int(top_row["top_n"])
+                tradable_top_n_by_window.setdefault(window_key, {}).update(
+                    {
+                        f"tradable_top_{top_count}_annualized_return": top_row.get(
+                            "annualized_return"
+                        ),
+                        f"tradable_top_{top_count}_max_drawdown": top_row.get(
+                            "max_drawdown"
+                        ),
+                        f"tradable_top_{top_count}_sharpe": top_row.get("sharpe"),
+                        f"tradable_top_{top_count}_cum_nav": top_row.get(
+                            "tradable_top_n_cum_nav"
+                        ),
+                        f"tradable_top_{top_count}_selected_count": top_row.get(
+                            "selected_count"
+                        ),
+                    }
+                )
         oos_by_window = (
             sample.loc[sample.get("sample", pd.Series(dtype=str)).eq("out_of_sample")].set_index(
                 "window"
@@ -604,6 +631,13 @@ def build_leaderboard(
         tradable_by_window = (
             tradable.sort_values("date").groupby("window").tail(1).set_index("window")
             if {"window", "date"}.issubset(tradable.columns)
+            else pd.DataFrame()
+        )
+        tradable_quantile_by_window = (
+            tradable_top_quantile.sort_values("date").groupby("window").tail(1).set_index(
+                "window"
+            )
+            if {"window", "date"}.issubset(tradable_top_quantile.columns)
             else pd.DataFrame()
         )
         for _, ic_row in ic.iterrows():
@@ -626,6 +660,12 @@ def build_leaderboard(
             tradable_row = (
                 tradable_by_window.loc[window]
                 if not tradable_by_window.empty and window in tradable_by_window.index
+                else pd.Series(dtype=object)
+            )
+            tradable_quantile_row = (
+                tradable_quantile_by_window.loc[window]
+                if not tradable_quantile_by_window.empty
+                and window in tradable_quantile_by_window.index
                 else pd.Series(dtype=object)
             )
             rank_icir = pd.to_numeric(pd.Series([ic_row.get("rank_icir")]), errors="coerce").iloc[0]
@@ -653,15 +693,42 @@ def build_leaderboard(
                 ),
                 "neutralized_rank_icir": neutralized_row.get("neutralized_rank_icir"),
                 "oos_rank_ic_mean": oos_row.get("rank_ic_mean"),
-                "oos_tradable_period_return": oos_row.get("tradable_period_return"),
-                "tradable_annualized_return": tradable_row.get("annualized_return"),
-                "tradable_max_drawdown": tradable_row.get("max_drawdown"),
-                "tradable_sharpe": tradable_row.get("sharpe"),
+                "oos_tradable_period_return": _first_available(
+                    oos_row.get("tradable_top_quantile_period_return"),
+                    oos_row.get("tradable_period_return"),
+                ),
+                "tradable_top_quantile": tradable_quantile_row.get("top_quantile"),
+                "tradable_top_quantile_annualized_return": tradable_quantile_row.get(
+                    "annualized_return"
+                ),
+                "tradable_top_quantile_max_drawdown": tradable_quantile_row.get(
+                    "max_drawdown"
+                ),
+                "tradable_top_quantile_sharpe": tradable_quantile_row.get("sharpe"),
+                "tradable_top_quantile_cum_nav": tradable_quantile_row.get(
+                    "tradable_top_quantile_cum_nav"
+                ),
+                "tradable_top_quantile_selected_count": tradable_quantile_row.get(
+                    "selected_count"
+                ),
+                "tradable_annualized_return": _first_available(
+                    tradable_quantile_row.get("annualized_return"),
+                    tradable_row.get("annualized_return"),
+                ),
+                "tradable_max_drawdown": _first_available(
+                    tradable_quantile_row.get("max_drawdown"),
+                    tradable_row.get("max_drawdown"),
+                ),
+                "tradable_sharpe": _first_available(
+                    tradable_quantile_row.get("sharpe"),
+                    tradable_row.get("sharpe"),
+                ),
                 "avg_coverage": avg_coverage,
                 "avg_turnover": avg_turnover,
                 "observation_count": ic_row.get("count"),
             }
             row.update(top_n_by_window.get(window, {}))
+            row.update(tradable_top_n_by_window.get(window, {}))
             rows.append(row)
     columns = [
         "factor",
@@ -699,6 +766,42 @@ def build_leaderboard(
         "top_20_selected_count",
         "top_50_selected_count",
         "top_100_selected_count",
+        "tradable_top_1_annualized_return",
+        "tradable_top_5_annualized_return",
+        "tradable_top_10_annualized_return",
+        "tradable_top_20_annualized_return",
+        "tradable_top_50_annualized_return",
+        "tradable_top_100_annualized_return",
+        "tradable_top_1_max_drawdown",
+        "tradable_top_5_max_drawdown",
+        "tradable_top_10_max_drawdown",
+        "tradable_top_20_max_drawdown",
+        "tradable_top_50_max_drawdown",
+        "tradable_top_100_max_drawdown",
+        "tradable_top_1_sharpe",
+        "tradable_top_5_sharpe",
+        "tradable_top_10_sharpe",
+        "tradable_top_20_sharpe",
+        "tradable_top_50_sharpe",
+        "tradable_top_100_sharpe",
+        "tradable_top_1_cum_nav",
+        "tradable_top_5_cum_nav",
+        "tradable_top_10_cum_nav",
+        "tradable_top_20_cum_nav",
+        "tradable_top_50_cum_nav",
+        "tradable_top_100_cum_nav",
+        "tradable_top_1_selected_count",
+        "tradable_top_5_selected_count",
+        "tradable_top_10_selected_count",
+        "tradable_top_20_selected_count",
+        "tradable_top_50_selected_count",
+        "tradable_top_100_selected_count",
+        "tradable_top_quantile",
+        "tradable_top_quantile_annualized_return",
+        "tradable_top_quantile_max_drawdown",
+        "tradable_top_quantile_sharpe",
+        "tradable_top_quantile_cum_nav",
+        "tradable_top_quantile_selected_count",
         "top_bottom_return",
         "monotonic",
         "neutralized_rank_ic_mean",
@@ -741,6 +844,13 @@ def _read_json(path: Path) -> dict[str, object]:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _first_available(*values: object) -> object:
+    for value in values:
+        if pd.notna(value):
+            return value
+    return np.nan
 
 
 def _atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:

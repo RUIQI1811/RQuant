@@ -4,7 +4,7 @@
 
 # 抓取日期范围（YYYYMMDD 或 'today'）
 start: "20180101"
-end: "20260702"
+end: "today"
 
 # 股票清单 CSV 路径（需含 ts_code 与 symbol 列）
 stocklist: "./config/stocklist.csv"
@@ -24,3 +24,7 @@ out: "./data/raw"
 
 # 并发下载线程数
 workers: 8
+
+# Tushare 请求起始速率上限；全局均匀节流，避免并发突发命中 200 次/分钟限额。
+# 默认留 10% 余量；设为 0 可显式关闭主动节流。
+max_requests_per_minute: 180

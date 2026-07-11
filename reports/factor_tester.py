@@ -8,6 +8,8 @@ from typing import Any, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from domain.factors import FactorEvaluationResult
+
 
 DEFAULT_FORWARD_WINDOWS = (1, 5, 10, 20)
 DEFAULT_QUANTILES = (0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99)
@@ -79,6 +81,14 @@ class _TradableCohort:
 
     long_weights: dict[str, float]
     short_weights: dict[str, float]
+    remaining_days: int
+
+
+@dataclass
+class _LongOnlyCohort:
+    """One long-only sleeve with fixed per-symbol weights and delayed exits."""
+
+    long_weights: dict[str, float]
     remaining_days: int
 
 
@@ -367,7 +377,7 @@ class FactorTester:
         self.data = df
         return df
 
-    def run_all(self) -> dict[str, pd.DataFrame]:
+    def run_all(self) -> FactorEvaluationResult:
         """Run all factor tests and return report tables keyed by report name."""
         df = self._prepared()
         coverage, coverage_summary = self.coverage_test()
@@ -376,6 +386,8 @@ class FactorTester:
         neutralized_ic, neutralized_ic_summary = self.neutralized_ic_test()
         group_return, group_summary = self.group_return_test()
         top_n_return, top_n_summary = self.top_n_return_test()
+        tradable_top_n = self.tradable_top_n_test()
+        tradable_top_quantile = self.tradable_top_quantile_test()
         stat_long_short = self.long_short_test()
         tradable_long_short = self.tradable_long_short_test()
         turnover = self.turnover_test()
@@ -386,6 +398,8 @@ class FactorTester:
         neutralized_ic = self._add_sample_split(neutralized_ic, oos_start)
         group_return = self._add_sample_split(group_return, oos_start)
         top_n_return = self._add_sample_split(top_n_return, oos_start)
+        tradable_top_n = self._add_sample_split(tradable_top_n, oos_start)
+        tradable_top_quantile = self._add_sample_split(tradable_top_quantile, oos_start)
         stat_long_short = self._add_sample_split(stat_long_short, oos_start)
         tradable_long_short = self._add_sample_split(tradable_long_short, oos_start)
         annual_performance = self.annual_performance_test(
@@ -396,6 +410,7 @@ class FactorTester:
             ic=ic,
             neutralized_ic=neutralized_ic,
             group_return=group_return,
+            tradable_top_quantile=tradable_top_quantile,
             stat_long_short=stat_long_short,
             tradable_long_short=tradable_long_short,
             oos_start=oos_start,
@@ -407,6 +422,8 @@ class FactorTester:
             ic_summary=ic_summary,
             group_summary=group_summary,
             top_n_summary=top_n_summary,
+            tradable_top_n=tradable_top_n,
+            tradable_top_quantile=tradable_top_quantile,
             stat_long_short=stat_long_short,
             tradable_long_short=tradable_long_short,
             exposure=exposure,
@@ -415,7 +432,7 @@ class FactorTester:
             row_count=len(df),
         )
         rank_ic = ic[[self.config.date_col, "window", "rank_ic", "sample"]]
-        return {
+        return FactorEvaluationResult(self.factor_name, {
             "summary": summary,
             "coverage": coverage,
             "distribution": distribution,
@@ -428,6 +445,8 @@ class FactorTester:
             "group_summary": group_summary,
             "top_n_return": top_n_return,
             "top_n_summary": top_n_summary,
+            "tradable_top_n": tradable_top_n,
+            "tradable_top_quantile": tradable_top_quantile,
             "long_short": stat_long_short,
             "stat_long_short": stat_long_short,
             "tradable_long_short": tradable_long_short,
@@ -437,7 +456,7 @@ class FactorTester:
             "filter_status": filter_status,
             "annual_performance": annual_performance,
             "sample_performance": sample_performance,
-        }
+        })
 
     def write_reports(self, output_root: str | Path = "factor_report") -> Path:
         """Write CSV reports under factor_report/{factor_name}/ and return the directory."""
@@ -458,6 +477,8 @@ class FactorTester:
             "group_summary": "group_summary.csv",
             "top_n_return": "top_n_return.csv",
             "top_n_summary": "top_n_summary.csv",
+            "tradable_top_n": "tradable_top_n.csv",
+            "tradable_top_quantile": "tradable_top_quantile.csv",
             "long_short": "long_short.csv",
             "stat_long_short": "stat_long_short.csv",
             "tradable_long_short": "tradable_long_short.csv",
@@ -708,6 +729,217 @@ class FactorTester:
                 }
             )
         return top_n_df, pd.DataFrame(summary_rows)
+
+    def tradable_top_n_test(self) -> pd.DataFrame:
+        """Build daily long-only tradable NAVs for fixed TopN factor buckets."""
+        cfg = self.config
+        return self._tradable_long_only_test(
+            bucket_name="top_n",
+            bucket_values=tuple(dict.fromkeys(int(value) for value in cfg.top_n_counts)),
+            nav_col="tradable_top_n_cum_nav",
+            selector=self._select_top_n_symbols,
+        )
+
+    def tradable_top_quantile_test(self) -> pd.DataFrame:
+        """Build a daily long-only tradable NAV for the highest factor quantile."""
+        cfg = self.config
+        return self._tradable_long_only_test(
+            bucket_name="top_quantile",
+            bucket_values=(1.0 / int(cfg.groups),),
+            nav_col="tradable_top_quantile_cum_nav",
+            selector=self._select_top_quantile_symbols,
+        )
+
+    def _tradable_long_only_test(
+        self,
+        *,
+        bucket_name: str,
+        bucket_values: Sequence[int | float],
+        nav_col: str,
+        selector: Any,
+    ) -> pd.DataFrame:
+        df = self._prepared()
+        cfg = self.config
+        if self.valuation_data is None:
+            raise ValueError(
+                "long-only tradable NAV requires either a close column "
+                f"('{cfg.close_col}') or daily return column ('{cfg.daily_return_col}')"
+            )
+
+        state_by_date = {
+            pd.Timestamp(date): daily
+            for date, daily in df.groupby(cfg.date_col, sort=True)
+        }
+        valuation_by_date = {
+            pd.Timestamp(date): daily.drop_duplicates(cfg.symbol_col, keep="last").set_index(
+                cfg.symbol_col
+            )
+            for date, daily in self.valuation_data.groupby(cfg.date_col, sort=True)
+        }
+        valuation_dates = sorted(valuation_by_date)
+        rows: list[dict[str, Any]] = []
+        for window in cfg.forward_return_windows:
+            holding_days = int(window)
+            for bucket_value in bucket_values:
+                active_cohorts: list[_LongOnlyCohort] = []
+                nav = 1.0
+                started = False
+                for date_index in range(len(valuation_dates) - 1):
+                    signal_date = valuation_dates[date_index]
+                    return_date = valuation_dates[date_index + 1]
+                    daily_selection = state_by_date.get(signal_date)
+                    entry_turnover = 0.0
+                    entry_cost = 0.0
+                    blocked_entries = 0
+                    selected_count = 0
+                    candidate_count = 0
+                    if daily_selection is not None and len(active_cohorts) < holding_days:
+                        (
+                            cohort,
+                            blocked_entries,
+                            selected_count,
+                            candidate_count,
+                        ) = self._build_long_only_cohort(
+                            daily_selection,
+                            bucket_value=bucket_value,
+                            selector=selector,
+                            holding_days=holding_days,
+                        )
+                        if cohort is not None:
+                            active_cohorts.append(cohort)
+                            started = True
+                            long_notional = sum(cohort.long_weights.values()) / holding_days
+                            entry_turnover = long_notional
+                            entry_cost = long_notional * (
+                                cfg.commission_rate + cfg.slippage_rate
+                            )
+
+                    if not started:
+                        continue
+
+                    realized_state = valuation_by_date[return_date]
+                    realized_returns = realized_state[cfg.daily_return_col]
+                    gross_return = sum(
+                        self._weighted_holding_return(realized_returns, cohort.long_weights)
+                        for cohort in active_cohorts
+                    ) / holding_days
+
+                    exit_long_notional = 0.0
+                    blocked_exits = 0
+                    surviving_cohorts: list[_LongOnlyCohort] = []
+                    for cohort in active_cohorts:
+                        cohort.remaining_days -= 1
+                        if cohort.remaining_days <= 0:
+                            for symbol in tuple(cohort.long_weights):
+                                if self._can_exit(realized_state, symbol, side="long"):
+                                    exit_long_notional += (
+                                        cohort.long_weights.pop(symbol) / holding_days
+                                    )
+                                else:
+                                    blocked_exits += 1
+                        if cohort.long_weights:
+                            surviving_cohorts.append(cohort)
+                    active_cohorts = surviving_cohorts
+
+                    exit_turnover = exit_long_notional
+                    exit_cost = exit_long_notional * (
+                        cfg.commission_rate + cfg.slippage_rate + cfg.stamp_tax_rate
+                    )
+                    transaction_cost = entry_cost + exit_cost
+                    net_return = gross_return - transaction_cost
+                    nav *= 1.0 + net_return
+                    row: dict[str, Any] = {
+                        cfg.date_col: return_date,
+                        "window": holding_days,
+                        bucket_name: bucket_value,
+                        "gross_return": gross_return,
+                        "transaction_cost": transaction_cost,
+                        "net_return": net_return,
+                        "entry_turnover": entry_turnover,
+                        "exit_turnover": exit_turnover,
+                        "blocked_entries": blocked_entries,
+                        "blocked_exits": blocked_exits,
+                        "active_cohorts": len(active_cohorts),
+                        "selected_count": selected_count,
+                        "candidate_count": candidate_count,
+                        nav_col: nav,
+                    }
+                    rows.append(row)
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return out
+        metrics = []
+        for keys, part in out.groupby(["window", bucket_name]):
+            window, bucket_value = keys
+            returns = part["net_return"].dropna()
+            nav_series = part[nav_col].dropna()
+            metrics.append(
+                {
+                    "window": int(window),
+                    bucket_name: bucket_value,
+                    "annualized_return": _annualized_return(returns),
+                    "max_drawdown": _max_drawdown(nav_series),
+                    "sharpe": _sharpe(returns),
+                }
+            )
+        return out.merge(pd.DataFrame(metrics), on=["window", bucket_name], how="left")
+
+    def _build_long_only_cohort(
+        self,
+        daily: pd.DataFrame,
+        *,
+        bucket_value: int | float,
+        selector: Any,
+        holding_days: int,
+    ) -> tuple[Optional[_LongOnlyCohort], int, int, int]:
+        cfg = self.config
+        valid = (
+            daily[[cfg.symbol_col, "factor_processed"]]
+            .dropna()
+            .drop_duplicates(cfg.symbol_col, keep="last")
+            .copy()
+        )
+        if valid.empty:
+            return None, 0, 0, 0
+        candidate_symbols = tuple(str(symbol) for symbol in selector(valid, bucket_value))
+        state = daily.drop_duplicates(cfg.symbol_col, keep="last").set_index(cfg.symbol_col)
+        long_symbols = tuple(
+            symbol for symbol in candidate_symbols if self._can_enter(state, symbol, side="long")
+        )
+        blocked_entries = len(candidate_symbols) - len(long_symbols)
+        if not long_symbols:
+            return None, blocked_entries, 0, len(candidate_symbols)
+        return (
+            _LongOnlyCohort(
+                long_weights={symbol: 1.0 / len(long_symbols) for symbol in long_symbols},
+                remaining_days=holding_days,
+            ),
+            blocked_entries,
+            len(long_symbols),
+            len(candidate_symbols),
+        )
+
+    def _select_top_n_symbols(self, valid: pd.DataFrame, top_n: int | float) -> tuple[str, ...]:
+        cfg = self.config
+        selected = valid.sort_values(
+            ["factor_processed", cfg.symbol_col],
+            ascending=[False, True],
+            kind="mergesort",
+        ).head(int(top_n))
+        return tuple(selected[cfg.symbol_col].astype(str))
+
+    def _select_top_quantile_symbols(
+        self,
+        valid: pd.DataFrame,
+        _: int | float,
+    ) -> tuple[str, ...]:
+        cfg = self.config
+        if len(valid) < cfg.groups:
+            return ()
+        grouped = valid.copy()
+        grouped["group"] = self._assign_groups(grouped["factor_processed"], cfg.groups)
+        selected = grouped.loc[grouped["group"] == cfg.groups]
+        return tuple(selected[cfg.symbol_col].astype(str))
 
     def long_short_test(self) -> pd.DataFrame:
         """Build explicitly statistical NAVs from forward-return observations."""
@@ -1150,6 +1382,7 @@ class FactorTester:
         ic: pd.DataFrame,
         neutralized_ic: pd.DataFrame,
         group_return: pd.DataFrame,
+        tradable_top_quantile: pd.DataFrame,
         stat_long_short: pd.DataFrame,
         tradable_long_short: pd.DataFrame,
         oos_start: pd.Timestamp,
@@ -1193,6 +1426,7 @@ class FactorTester:
                 ic_part = subset(ic)
                 neutral_part = subset(neutralized_ic)
                 group_part = subset(group_spread)
+                tradable_top_quantile_part = subset(tradable_top_quantile)
                 stat_part = subset(stat_long_short)
                 tradable_part = subset(tradable_long_short)
                 row.update(
@@ -1222,6 +1456,14 @@ class FactorTester:
                     if not tradable_part.empty
                     else pd.Series(dtype="float64")
                 )
+                tradable_top_quantile_returns = (
+                    pd.to_numeric(
+                        tradable_top_quantile_part["net_return"],
+                        errors="coerce",
+                    ).dropna()
+                    if not tradable_top_quantile_part.empty
+                    else pd.Series(dtype="float64")
+                )
                 row.update(
                     {
                         "stat_period_return": (1.0 + stat_returns).prod() - 1.0
@@ -1239,6 +1481,19 @@ class FactorTester:
                             (1.0 + tradable_returns).cumprod()
                         )
                         if not tradable_returns.empty
+                        else np.nan,
+                        "tradable_top_quantile_period_return": (
+                            (1.0 + tradable_top_quantile_returns).prod() - 1.0
+                            if not tradable_top_quantile_returns.empty
+                            else np.nan
+                        ),
+                        "tradable_top_quantile_sharpe": _sharpe(
+                            tradable_top_quantile_returns
+                        ),
+                        "tradable_top_quantile_max_drawdown": _max_drawdown(
+                            (1.0 + tradable_top_quantile_returns).cumprod()
+                        )
+                        if not tradable_top_quantile_returns.empty
                         else np.nan,
                     }
                 )
@@ -1451,6 +1706,8 @@ class FactorTester:
         ic_summary: pd.DataFrame,
         group_summary: pd.DataFrame,
         top_n_summary: pd.DataFrame,
+        tradable_top_n: pd.DataFrame,
+        tradable_top_quantile: pd.DataFrame,
         stat_long_short: pd.DataFrame,
         tradable_long_short: pd.DataFrame,
         exposure: pd.DataFrame,
@@ -1532,6 +1789,48 @@ class FactorTester:
                         "value": row.get(metric),
                     }
                 )
+        if not tradable_top_n.empty:
+            latest = tradable_top_n.sort_values(
+                [self.config.date_col, "window", "top_n"]
+            ).groupby(["window", "top_n"]).tail(1)
+            for _, row in latest.iterrows():
+                for metric in (
+                    "tradable_top_n_cum_nav",
+                    "annualized_return",
+                    "max_drawdown",
+                    "sharpe",
+                    "selected_count",
+                ):
+                    rows.append(
+                        {
+                            "section": "tradable_top_n",
+                            "window": int(row["window"]),
+                            "top_n": int(row["top_n"]),
+                            "metric": metric,
+                            "value": row.get(metric),
+                        }
+                    )
+        if not tradable_top_quantile.empty:
+            latest = tradable_top_quantile.sort_values(
+                [self.config.date_col, "window", "top_quantile"]
+            ).groupby(["window", "top_quantile"]).tail(1)
+            for _, row in latest.iterrows():
+                for metric in (
+                    "tradable_top_quantile_cum_nav",
+                    "annualized_return",
+                    "max_drawdown",
+                    "sharpe",
+                    "selected_count",
+                ):
+                    rows.append(
+                        {
+                            "section": "tradable_top_quantile",
+                            "window": int(row["window"]),
+                            "top_quantile": row["top_quantile"],
+                            "metric": metric,
+                            "value": row.get(metric),
+                        }
+                    )
         if not stat_long_short.empty:
             latest = stat_long_short.sort_values(
                 [self.config.date_col, "window"]
@@ -1587,12 +1886,27 @@ def build_long_factor_frame_from_raw(
 
     Supported built-in factors:
     - momentum_Nd computes close / close.shift(N) - 1.
+    - registered custom factors use ``factors.custom``.
     - alpha_001 through alpha_101 use ``factors.alpha101``.
     - gtja_001 through gtja_191 use ``factors.gtja191``.
     - brick tests the configured BrickChart strategy gate and score.
     - brick_growth tests the dense continuous BrickChart strength.
     """
     from factors.brick import brick_factor_to_long, is_brick_factor
+    from factors.custom import custom_factor_to_long, is_custom_factor
+
+    if is_custom_factor(factor_name):
+        result = custom_factor_to_long(
+            raw_data,
+            factor_name,
+            metadata=metadata,
+        )
+        rename_map = {
+            "date": date_col,
+            "symbol": symbol_col,
+            "close": close_col,
+        }
+        return result.rename(columns=rename_map)
 
     if is_brick_factor(factor_name):
         result = brick_factor_to_long(

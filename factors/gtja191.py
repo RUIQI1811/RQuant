@@ -12,7 +12,8 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from factors.alpha101 import (
+from factors.alpha101 import build_alpha101_panels
+from factors.operators import (
     correlation,
     covariance,
     decay_linear,
@@ -22,6 +23,8 @@ from factors.alpha101 import (
     element_min,
     product,
     rank,
+    replace_inf as _replace_inf,
+    safe_div as _safe_div,
     scale,
     signed_power,
     stddev,
@@ -31,7 +34,7 @@ from factors.alpha101 import (
     ts_min,
     ts_rank,
     ts_sum,
-    build_alpha101_panels,
+    window as _window,
 )
 
 
@@ -94,10 +97,6 @@ class GTJA191Panels:
     @property
     def cap(self) -> Panel | None:
         return self.market_cap
-
-
-def _window(value: int | float) -> int:
-    return max(1, int(np.floor(float(value) + 0.5)))
 
 
 def normalize_gtja_name(name: str | int) -> str:
@@ -240,18 +239,6 @@ def mean(value: Panel, periods: int | float) -> Panel:
 
     window = _window(periods)
     return value.rolling(window, min_periods=window).mean()
-
-
-def _replace_inf(value: Panel) -> Panel:
-    return value.replace([np.inf, -np.inf], np.nan)
-
-
-def _safe_div(numerator: Panel, denominator: Panel | float) -> Panel:
-    if isinstance(denominator, pd.DataFrame):
-        denominator = denominator.mask(denominator.abs() < 1e-12)
-    elif abs(float(denominator)) < 1e-12:
-        denominator = np.nan
-    return _replace_inf(numerator / denominator)
 
 
 def _conditional(

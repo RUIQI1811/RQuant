@@ -21,6 +21,7 @@ import pandas as pd
 import yaml
 
 from signals.candidates import Candidate
+from domain.selection import SelectionResult
 from strategies.selector import B1Selector, BrickChartSelector
 from market.preparation import MarketDataPreparer, TopTurnoverPoolBuilder
 from strategies.bdsr_macd_obv import BDSRMACDOBVSelector
@@ -413,7 +414,7 @@ def run_preselect(
     data_dir: Optional[str] = None,
     end_date: Optional[str] = None,
     pick_date: Optional[str] = None,
-) -> Tuple[pd.Timestamp, List[Candidate]]:
+) -> SelectionResult:
     """
     量化初选主函数，返回 (pick_date_ts, List[Candidate])。
     不写任何文件，由 cli.py 负责落盘。
@@ -456,7 +457,7 @@ def run_preselect(
     pool_codes = TopTurnoverPoolBuilder(top_m=top_m).build(prepared).get(pick_ts, [])
     if not pool_codes:
         logger.warning("流动性池为空，pick_date=%s", pick_ts.date())
-        return pick_ts, []
+        return SelectionResult(pick_date=pick_ts, candidates=())
 
     logger.info("流动性池: %d 只", len(pool_codes))
 
@@ -487,7 +488,7 @@ def run_preselect(
     deduped = [c for c in all_candidates if not (c.code in seen or seen.add(c.code))]  # type: ignore[func-returns-value]
 
     logger.info("初选完成，候选股票: %d 只", len(deduped))
-    return pick_ts, deduped
+    return SelectionResult(pick_date=pick_ts, candidates=tuple(deduped))
 
 
 __all__ = [

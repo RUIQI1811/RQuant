@@ -106,20 +106,20 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 查看 Alpha101 当前研究状态：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python \
+python \
   scripts/quant_cli.py factor-batch --list-factor-status
 ```
 
 生成 Alpha077 过滤、Alpha040 排序的最新信号：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-select
+python scripts/quant_cli.py factor-select
 ```
 
 生成显式权重的多因子排名信号：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py \
+python scripts/quant_cli.py \
   factor-ensemble-select \
   --factors alpha_040 alpha_069 alpha_077 \
   --weights 0.6 0.2 0.2 \
@@ -131,7 +131,7 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 将同一组合送入 20 个固定资金槽位的组合回测：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py \
+python scripts/quant_cli.py \
   factor-ensemble-backtest \
   --factors alpha_040 alpha_069 alpha_077 \
   --weights 0.6 0.2 0.2 \
@@ -147,7 +147,7 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 生成历史区间信号：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-select \
+python scripts/quant_cli.py factor-select \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --filter-top-quantile 0.5 \
@@ -160,7 +160,7 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 初始资金为 1000 万元。
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-backtest \
+python scripts/quant_cli.py factor-backtest \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --hold-days 20
@@ -169,7 +169,7 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 如需研究过滤后 `alpha_040` 排名的中间区间，使用从 1 开始的闭区间：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-backtest \
+python scripts/quant_cli.py factor-backtest \
   --start 2025-01-01 \
   --end 2026-06-23 \
   --rank-start 200 \
@@ -193,7 +193,7 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 只复查主因子：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-test \
+python scripts/quant_cli.py factor-test \
   --factor alpha_040 \
   --data data/raw \
   --metadata config/stocklist.csv \
@@ -204,7 +204,7 @@ A 股多头主口径查看 `tradable_top_quantile.csv` 和 `tradable_top_n.csv`�
 复查当前核心因子：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-batch \
+python scripts/quant_cli.py factor-batch \
   --factors alpha_013 alpha_016 alpha_040 alpha_044 \
   --windows 10 20 \
   --groups 10

@@ -10,6 +10,7 @@ import random
 import sys
 import threading
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -206,14 +207,22 @@ def _get_kline_tushare(
     if rate_limiter is not None:
         rate_limiter.wait()
     try:
-        df = ts.pro_bar(
-            ts_code=ts_code,
-            adj="qfq",
-            start_date=start,
-            end_date=end,
-            freq="D",
-            api=pro
-        )
+        # Tushare currently emits this pandas deprecation warning internally.
+        # Keep the filter scoped to the external call so project warnings remain visible.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Series\.fillna with 'method' is deprecated.*",
+                category=FutureWarning,
+            )
+            df = ts.pro_bar(
+                ts_code=ts_code,
+                adj="qfq",
+                start_date=start,
+                end_date=end,
+                freq="D",
+                api=pro,
+            )
     except Exception as e:
         if _looks_like_ip_ban(e):
             raise RateLimitError(str(e)) from e
@@ -770,7 +779,16 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    for attempt in range(5):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            # Windows indexers or security scanners may briefly lock the
+            # destination between the temporary write and atomic replacement.
+            time.sleep(0.05 * (attempt + 1))
 
 
 def _normalize_request_date(value: str) -> str:

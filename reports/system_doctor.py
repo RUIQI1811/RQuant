@@ -194,6 +194,11 @@ def _summarize_import_error(exc: Exception) -> str:
     message = str(exc).casefold()
     if "libomp.dylib" in message:
         return "missing native library libomp.dylib"
+    if "dll load failed" in message or "specified module could not be found" in message:
+        return (
+            "Windows native DLL load failed; activate the intended environment and "
+            "reinstall the dependency"
+        )
     return type(exc).__name__
 
 

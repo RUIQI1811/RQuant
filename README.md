@@ -1,4 +1,4 @@
-# RQuant
+﻿# RQuant
 
 RQuant 是一个面向 A 股的本地量化研究项目。它把行情数据、因子研究、机器学习标签/模型、自定义买点、组合回测和报告输出拆成清晰的顶层模块。
 
@@ -57,6 +57,35 @@ date, symbol, signal_type, source, score, weight, metadata
 
 ## 快速开始
 
+### Windows 与 macOS
+
+项目默认使用 Conda 管理 Python 3.11 环境。请先在项目根目录创建并激活 `stocktrade`
+环境，再执行本文其余的 `python ...` 命令。
+
+Windows PowerShell：
+
+```powershell
+conda create -n stocktrade python=3.11 -y
+conda activate stocktrade
+python -m pip install --upgrade pip
+```
+
+macOS（zsh/bash）：
+
+```bash
+conda create -n stocktrade python=3.11 -y
+conda activate stocktrade
+python -m pip install --upgrade pip
+```
+
+若已创建过 `stocktrade` 环境，后续只需执行 `conda activate stocktrade`，不必重复创建。首次使用
+Windows PowerShell 或 macOS 终端时若找不到 `conda`，请分别运行 `conda init powershell` 或
+`conda init zsh`，重开终端后再执行上述命令。所有路径参数都使用正斜杠（例如 `data/raw`），
+可同时用于 Windows 和 macOS。
+
+后文所有命令均为单行写法，可直接粘贴到 Windows PowerShell、macOS 的 zsh 或 bash；无需
+替换续行符。
+
 ### 0. 统一工程入口
 
 仓库的正式入口是：
@@ -72,8 +101,8 @@ python -m pip install -e .
 rquant doctor
 ```
 
-`python scripts/quant_cli.py ...` 在迁移期继续兼容全部原有命令和参数，但执行时会提示
-迁移到新入口。研究业务仍由原来的 `market/`、`factors/`、`training/`、`strategies/`
+`python -m rquant ...` 是正式入口。`python scripts/quant_cli.py ...` 仅保留为迁移期
+兼容入口，执行时会显示弃用提示。研究业务仍由原来的 `market/`、`factors/`、`training/`、`strategies/`
 和 `backtest/` 模块承担；`rquant/` 只负责入口、路径、日志和运行治理。
 
 所有正式命令支持以下全局参数，参数可放在子命令前后：
@@ -119,10 +148,10 @@ python -m pip install -r requirements.txt
 核心依赖和可选 ML 后端均按已验证版本锁定；`doctor` 会同时检查包是否真实可导入以及
 固定版本是否匹配，避免“已安装但原生库缺失”或依赖升级漂移。
 
-推荐使用已有的 stocktrade 环境运行测试和 CLI：
+激活环境后，用当前环境的解释器运行测试和 CLI：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py --help
+python -m rquant --help
 ```
 
 ### 2. 配置密钥
@@ -144,8 +173,7 @@ GEMINI_API_KEY=你的Gemini API Key
 ### 3. 抓取行情
 
 ```bash
-python scripts/quant_cli.py fetch-data \
-  --config config/fetch_kline.yaml
+python -m rquant fetch-data --config config/fetch_kline.yaml
 ```
 
 配置文件：
@@ -171,9 +199,7 @@ manifest 保存区间、股票池签名、逐股 outcome、失败原因、重试
 `fetch-data` 返回非零退出码。修复外部服务后可仅重试失败/未完成代码：
 
 ```bash
-python scripts/quant_cli.py fetch-data \
-  --config config/fetch_kline.yaml \
-  --resume
+python -m rquant fetch-data --config config/fetch_kline.yaml --resume
 ```
 
 只有日期区间、输出目录和股票池签名完全一致时才允许恢复，防止把另一批抓取结果混入。
@@ -183,9 +209,7 @@ python scripts/quant_cli.py fetch-data \
 为 Tushare 常见的 200 次/分钟限额留出余量。工作线程仍可覆盖，节流也可临时调整：
 
 ```bash
-python scripts/quant_cli.py fetch-data \
-  --workers 8 \
-  --max-requests-per-minute 180
+python -m rquant fetch-data --workers 8 --max-requests-per-minute 180
 ```
 
 `--max-requests-per-minute 0` 会显式关闭主动节流，只建议在已确认账号限额或外部统一限流时使用。
@@ -202,8 +226,7 @@ date, open, close, high, low, volume
 在抓取、因子批处理或模型训练前，可先运行只读自检：
 
 ```bash
-python scripts/quant_cli.py doctor \
-  --output data/reports/system_doctor.json
+python -m rquant doctor --output data/reports/system_doctor.json
 ```
 
 默认检查当前 Python 解释器、`requirements.txt` 必需依赖、ML 可选依赖、核心 YAML、
@@ -213,7 +236,7 @@ python scripts/quant_cli.py doctor \
 检查全部行情文件时显式使用：
 
 ```bash
-python scripts/quant_cli.py doctor --deep
+python -m rquant doctor --deep
 ```
 
 必需依赖、核心配置或已存在行情文件的结构错误会返回非零退出码；未安装 Torch、
@@ -295,10 +318,7 @@ python dashboard/export_kline_charts.py --resume
 ### 自定义策略信号收益
 
 ```bash
-python scripts/quant_cli.py signal-returns \
-  --strategies bdsr_macd_obv \
-  --horizons 1,5,10,20 \
-  --buy-mode next_open
+python -m rquant signal-returns --strategies bdsr_macd_obv --horizons 1,5,10,20 --buy-mode next_open
 ```
 
 输出：
@@ -310,11 +330,7 @@ data/backtest/
 ### 自定义策略组合回测
 
 ```bash
-python scripts/quant_cli.py portfolio-backtest \
-  --strategy bdsr_macd_obv \
-  --buy-mode next_open \
-  --hold-days 5 \
-  --initial-cash 100000
+python -m rquant portfolio-backtest --strategy bdsr_macd_obv --buy-mode next_open --hold-days 5 --initial-cash 100000
 ```
 
 输出：
@@ -328,12 +344,7 @@ data/portfolio_backtest/
 ### 单因子检验
 
 ```bash
-python scripts/quant_cli.py factor-test \
-  --factor alpha_040 \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --windows 10 20 \
-  --groups 10
+python -m rquant factor-test --factor alpha_040 --data data/raw --metadata config/stocklist.csv --windows 10 20 --groups 10
 ```
 
 输出：
@@ -377,13 +388,7 @@ filter_status.csv
 `amount * 1000`，最后回退为 `close * volume`。运行：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-test \
-  --factor custom_001 \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --windows 1 5 10 20 \
-  --groups 10 \
-  --output factor_report
+python -m rquant factor-test --factor custom_001 --data data/raw --metadata config/stocklist.csv --windows 1 5 10 20 --groups 10 --output factor_report
 ```
 
 输出目录：
@@ -404,13 +409,7 @@ rank((vwap - close) / vwap)
 可以使用同一个入口运行：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-test \
-  --factor custom_002 \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --windows 1 5 10 20 \
-  --groups 10 \
-  --output factor_report
+python -m rquant factor-test --factor custom_002 --data data/raw --metadata config/stocklist.csv --windows 1 5 10 20 --groups 10 --output factor_report
 ```
 
 若原始数据没有 `vwap` 或 `avg`，面板构建器使用
@@ -421,30 +420,13 @@ rank((vwap - close) / vwap)
 查看因子生命周期状态：
 
 ```bash
-python scripts/quant_cli.py factor-batch --list-factor-status
+python -m rquant factor-batch --list-factor-status
 ```
 
 按 `config/factors.yaml` 运行当前 `active` / `watch` 因子：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-batch \
-  --family alpha101 \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --output factor_report/alpha101_batch/latest \
-  --factor-config config/factors.yaml \
-  --factors all \
-  --windows 1 5 10 20 \
-  --groups 10 \
-  --top-counts 1 5 10 20 50 100 \
-  --start-date 2020-01-01 \
-  --end-date 2026-06-30 \
-  --min-listing-days 60 \
-  --liquidity-lookback-days 20 \
-  --commission-rate 0.0003 \
-  --slippage-rate 0.0005 \
-  --stamp-tax-rate 0.0005 \
-  --oos-start-date 2025-01-01
+python -m rquant factor-batch --family alpha101 --data data/raw --metadata config/stocklist.csv --output factor_report/alpha101_batch/latest --factor-config config/factors.yaml --factors all --windows 1 5 10 20 --groups 10 --top-counts 1 5 10 20 50 100 --start-date 2020-01-01 --end-date 2026-06-30 --min-listing-days 60 --liquidity-lookback-days 20 --commission-rate 0.0003 --slippage-rate 0.0005 --stamp-tax-rate 0.0005 --oos-start-date 2025-01-01
 ```
 
 默认会复用实现签名和数据签名一致的已落盘结果；只有确认需要全部重算时才追加
@@ -465,17 +447,7 @@ config/factors.yaml
 ### GTJA191 批处理
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py factor-batch \
-  --family gtja191 \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --output factor_report/gtja191_batch/latest \
-  --factor-config config/gtja191_factors.yaml \
-  --factors all \
-  --windows 1 5 10 20 \
-  --groups 10 \
-  --top-counts 1 5 10 20 50 100 \
-  --min-listing-days 60
+python -m rquant factor-batch --family gtja191 --data data/raw --metadata config/stocklist.csv --output factor_report/gtja191_batch/latest --factor-config config/gtja191_factors.yaml --factors all --windows 1 5 10 20 --groups 10 --top-counts 1 5 10 20 50 100 --min-listing-days 60
 ```
 
 同样只有确认需要全部重算时才追加 `--force`。GTJA191 当前批处理没有日期区间、
@@ -498,20 +470,13 @@ config/gtja191_factors.yaml
 生成 Alpha077 过滤、Alpha040 排序信号：
 
 ```bash
-python scripts/quant_cli.py factor-select \
-  --start 2025-01-01 \
-  --end 2026-06-23 \
-  --filter-top-quantile 0.5 \
-  --top-n 10
+python -m rquant factor-select --start 2025-01-01 --end 2026-06-23 --filter-top-quantile 0.5 --top-n 10
 ```
 
 直接生成信号并运行组合回测：
 
 ```bash
-python scripts/quant_cli.py factor-backtest \
-  --start 2025-01-01 \
-  --end 2026-06-23 \
-  --hold-days 20
+python -m rquant factor-backtest --start 2025-01-01 --end 2026-06-23 --hold-days 20
 ```
 
 默认因子组合回测参数：
@@ -531,15 +496,7 @@ initial-cash = 10000000
 生成 `alpha_040 + alpha_069 + alpha_077` 的研究信号：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py \
-  factor-ensemble-select \
-  --factors alpha_040 alpha_069 alpha_077 \
-  --weights 0.6 0.2 0.2 \
-  --min-factor-coverage 1.0 \
-  --top-n 10 \
-  --start 2025-01-01 \
-  --end 2026-06-23 \
-  --output data/factor_signals/ensemble_040_069_077
+python -m rquant factor-ensemble-select --factors alpha_040 alpha_069 alpha_077 --weights 0.6 0.2 0.2 --min-factor-coverage 1.0 --top-n 10 --start 2025-01-01 --end 2026-06-23 --output data/factor_signals/ensemble_040_069_077
 ```
 
 如果某个因子是数值越低越好，必须通过 `--ascending-factors` 显式列出。权重只决定
@@ -557,17 +514,7 @@ data/factor_signals/ensemble_040_069_077/manifest.json
 使用同一组合进入考虑次日开盘、费用、涨跌停、停牌、整手和固定资金槽位的组合回测：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py \
-  factor-ensemble-backtest \
-  --factors alpha_040 alpha_069 alpha_077 \
-  --weights 0.6 0.2 0.2 \
-  --min-factor-coverage 1.0 \
-  --top-n 10 \
-  --start 2025-01-01 \
-  --end 2026-06-23 \
-  --hold-days 20 \
-  --initial-cash 10000000 \
-  --output data/portfolio_backtest_factor_ensemble_040_069_077
+python -m rquant factor-ensemble-backtest --factors alpha_040 alpha_069 alpha_077 --weights 0.6 0.2 0.2 --min-factor-coverage 1.0 --top-n 10 --start 2025-01-01 --end 2026-06-23 --hold-days 20 --initial-cash 10000000 --output data/portfolio_backtest_factor_ensemble_040_069_077
 ```
 
 组合权重是需要样本外验证的研究假设，不代表已证明最优。该入口目前计算 Alpha101
@@ -582,20 +529,7 @@ LightGBM 和 Torch MLP。默认将特征和标签都转换为每日横截面百�
 目标是做多排名，而不是精确拟合极端的原始收益率。
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py fit-multifactor \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --factors alpha_040 alpha_069 alpha_077 custom_001 custom_002 \
-  --models ridge elasticnet lightgbm mlp \
-  --target-window 20 \
-  --feature-transform rank \
-  --target-transform rank \
-  --train-size 504 \
-  --test-size 21 \
-  --signal-top-n 10 \
-  --start 2018-01-01 \
-  --end 2026-06-30 \
-  --output data/ml/multifactor_20d
+python -m rquant fit-multifactor --data data/raw --metadata config/stocklist.csv --factors alpha_040 alpha_069 alpha_077 custom_001 custom_002 --models ridge elasticnet lightgbm mlp --target-window 20 --feature-transform rank --target-transform rank --train-size 504 --test-size 21 --signal-top-n 10 --start 2018-01-01 --end 2026-06-30 --output data/ml/multifactor_20d
 ```
 
 `next_open_return_20d` 会自动使用至少 21 个交易日的 purge gap。主要产物：
@@ -619,17 +553,7 @@ data/ml/multifactor_20d/manifest.json
 先从本地日线生成统一滞后因子特征和 forward-return 标签：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py \
-  make-ml-dataset \
-  --data data/raw \
-  --metadata config/stocklist.csv \
-  --factors alpha_040 alpha_077 custom_002 \
-  --target-windows 20 \
-  --factor-lag-days 1 \
-  --label-mode next_open \
-  --start 2018-01-01 \
-  --end 2026-06-30 \
-  --output data/ml/dataset_20d
+python -m rquant make-ml-dataset --data data/raw --metadata config/stocklist.csv --factors alpha_040 alpha_077 custom_002 --target-windows 20 --factor-lag-days 1 --label-mode next_open --start 2018-01-01 --end 2026-06-30 --output data/ml/dataset_20d
 ```
 
 `make-ml-dataset` 固定保留 `shift(1)`。默认标签与真实组合回测一致：信号日后的
@@ -664,16 +588,7 @@ date,symbol,next_open_return_20d
 当前环境无需额外 ML 依赖即可运行 Ridge：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py train-model \
-  --features data/ml/dataset_20d/features.csv \
-  --labels data/ml/dataset_20d/labels.csv \
-  --feature-cols alpha_040 alpha_077 custom_002 \
-  --target-col next_open_return_20d \
-  --model ridge \
-  --train-size 504 \
-  --test-size 21 \
-  --signal-top-n 10 \
-  --output data/ml/ridge_20d
+python -m rquant train-model --features data/ml/dataset_20d/features.csv --labels data/ml/dataset_20d/labels.csv --feature-cols alpha_040 alpha_077 custom_002 --target-col next_open_return_20d --model ridge --train-size 504 --test-size 21 --signal-top-n 10 --output data/ml/ridge_20d
 ```
 
 每个窗口都会重新训练，只将测试窗口预测写入总结果。逐窗结果带输入、配置和实现签名，
@@ -702,6 +617,10 @@ macOS 上若 `doctor` 报告 LightGBM 缺少 `libomp.dylib`，在对应 Conda �
 conda install -n stocktrade -c conda-forge llvm-openmp
 ```
 
+Windows 上若 `doctor` 报告 LightGBM 无法加载 DLL，请先确认使用的是已激活环境中的
+`python`，然后重新安装 `requirements-ml.txt`；仍失败时请安装 Microsoft Visual C++ 2015–2022
+Redistributable 后重新打开终端。不要在项目目录中复制 DLL 文件。
+
 LightGBM 默认使用单工作线程以保证本地研究可复现；可按机器资源显式传
 `--lightgbm-n-jobs N`。Torch MLP 的 `--device auto` 会按 MPS、CUDA、CPU 的顺序
 选择实际可用设备。
@@ -709,16 +628,7 @@ LightGBM 默认使用单工作线程以保证本地研究可复现；可按机�
 MLP 示例：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py train-model \
-  --features data/ml/dataset_20d/features.csv \
-  --labels data/ml/dataset_20d/labels.csv \
-  --feature-cols alpha_040 alpha_077 custom_002 \
-  --target-col next_open_return_20d \
-  --model mlp \
-  --mlp-hidden-sizes 64 32 \
-  --mlp-epochs 100 \
-  --device auto \
-  --output data/ml/mlp_20d
+python -m rquant train-model --features data/ml/dataset_20d/features.csv --labels data/ml/dataset_20d/labels.csv --feature-cols alpha_040 alpha_077 custom_002 --target-col next_open_return_20d --model mlp --mlp-hidden-sizes 64 32 --mlp-epochs 100 --device auto --output data/ml/mlp_20d
 ```
 
 `device=auto` 在可用时依次选择 Apple MPS、CUDA、CPU。模型分数只通过
@@ -727,14 +637,7 @@ MLP 示例：
 将模型输出送入与因子相同的次日开盘和固定资金槽位回测：
 
 ```bash
-/opt/miniconda3/envs/stocktrade/bin/python scripts/quant_cli.py signal-backtest \
-  --signals data/ml/ridge_20d/signals.csv \
-  --source model_ridge \
-  --data data/raw \
-  --hold-days 20 \
-  --max-positions 10 \
-  --initial-cash 10000000 \
-  --output data/portfolio_backtest_model_ridge_20d
+python -m rquant signal-backtest --signals data/ml/ridge_20d/signals.csv --source model_ridge --data data/raw --hold-days 20 --max-positions 10 --initial-cash 10000000 --output data/portfolio_backtest_model_ridge_20d
 ```
 
 `signal-backtest` 可读取任何符合统一字段的信号文件，并按 `score` 从高到低保留每日
@@ -744,12 +647,7 @@ MLP 示例：
 ### 研究报告
 
 ```bash
-python scripts/quant_cli.py research-report \
-  --signal-dir data/backtest \
-  --portfolio-dir data/portfolio_backtest \
-  --candidates data/candidates/candidates_latest.json \
-  --review data/review/2026-06-23/suggestion.json \
-  --output data/reports
+python -m rquant research-report --signal-dir data/backtest --portfolio-dir data/portfolio_backtest --candidates data/candidates/candidates_latest.json --review data/review/2026-06-23/suggestion.json --output data/reports
 ```
 
 报告默认严格校验必需 JSON、候选/复评日期、复评完整状态、信号与组合的 `buy_mode`
@@ -804,7 +702,7 @@ factor_report/              因子检验和批处理结果
 
 ```bash
 python -m rquant --help
-python scripts/quant_cli.py --help
+python -m rquant --help
 ```
 
 运行核心测试：

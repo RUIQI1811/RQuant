@@ -85,11 +85,12 @@ class SystemDoctorTest(unittest.TestCase):
                 )
 
             serialized = output.read_text(encoding="utf-8")
+            persisted = json.loads(serialized)
             self.assertEqual(report["status"], "ok")
             self.assertTrue(report["ok"])
             self.assertNotIn(secret_token, serialized)
             self.assertNotIn("another-secret", serialized)
-            self.assertIn(str(output), serialized)
+            self.assertEqual(persisted["output_path"], str(output))
             self.assertEqual(report["secrets"]["items"][0]["source"], ".env")
             self.assertEqual(report["market_data"]["date_max"], date.today().isoformat())
             self.assertEqual(report["market_data"]["data_age_days"], 0)
@@ -230,6 +231,24 @@ class SystemDoctorTest(unittest.TestCase):
         self.assertFalse(result["importable"])
         self.assertEqual(result["import_error"], "missing native library libomp.dylib")
         self.assertIn("import failed", result["message"])
+
+    def test_windows_native_dependency_error_has_actionable_summary(self):
+        with (
+            patch.object(system_doctor.importlib.metadata, "version", return_value="4.6.0"),
+            patch.object(
+                system_doctor.importlib,
+                "import_module",
+                side_effect=ImportError("DLL load failed while importing lightgbm"),
+            ),
+        ):
+            result = system_doctor._check_distribution(
+                "lightgbm",
+                expected=None,
+                required=False,
+            )
+
+        self.assertEqual(result["status"], "warning")
+        self.assertIn("Windows native DLL load failed", result["import_error"])
 
     def test_partial_fetch_manifest_makes_existing_market_data_unhealthy(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -4,6 +4,7 @@ import logging
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -29,6 +30,33 @@ def _kline_frame(dates: list[str], closes: list[float]) -> pd.DataFrame:
 
 
 class FetchKlineRangeOverwriteTest(unittest.TestCase):
+    def test_atomic_manifest_write_retries_transient_permission_error(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manifest_path = Path(temp_dir) / "_fetch_manifest.json"
+            real_replace = os.replace
+            attempts = 0
+
+            def replace_with_transient_lock(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    raise PermissionError("temporary Windows file lock")
+                real_replace(source, target)
+
+            with (
+                patch.object(fetch_kline.os, "replace", side_effect=replace_with_transient_lock),
+                patch.object(fetch_kline.time, "sleep") as sleep,
+            ):
+                fetch_kline._atomic_write_json(manifest_path, {"status": "complete"})
+
+            self.assertEqual(attempts, 3)
+            self.assertEqual(sleep.call_args_list[0].args, (0.05,))
+            self.assertEqual(sleep.call_args_list[1].args, (0.1,))
+            self.assertEqual(
+                json.loads(manifest_path.read_text(encoding="utf-8")),
+                {"status": "complete"},
+            )
+
     def test_request_rate_limiter_evenly_spaces_request_starts(self):
         now = [100.0]
         sleeps: list[float] = []
@@ -66,6 +94,23 @@ class FetchKlineRangeOverwriteTest(unittest.TestCase):
         self.assertTrue(result.empty)
         limiter.wait.assert_called_once_with()
         api.assert_called_once()
+
+    def test_get_kline_suppresses_known_tushare_fillna_future_warning(self):
+        def provider_warning(**_kwargs):
+            warnings.warn(
+                "Series.fillna with 'method' is deprecated and will raise in a future version.",
+                FutureWarning,
+            )
+            return pd.DataFrame()
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always")
+            with patch.object(fetch_kline.ts, "pro_bar", side_effect=provider_warning):
+                fetch_kline._get_kline_tushare("000001", "20260101", "20260102")
+
+        self.assertFalse(
+            any("Series.fillna with 'method' is deprecated" in str(item.message) for item in captured)
+        )
 
     def test_run_fetch_applies_cli_overrides_without_real_network(self):
         with tempfile.TemporaryDirectory() as temp_dir:

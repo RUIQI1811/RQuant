@@ -1,7 +1,10 @@
+import argparse
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +13,13 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from training.build_dataset import MLDatasetConfig, build_ml_dataset
-from training.multifactor import MultifactorFitConfig, run_multifactor_fit
+from training.multifactor import (
+    MultifactorFitConfig,
+    add_arguments as add_multifactor_arguments,
+    config_from_args,
+    load_lifecycle_factors,
+    run_multifactor_fit,
+)
 from training.train_walk_forward import WalkForwardTrainingConfig, run_walk_forward_training
 from backtest.signal_portfolio import run_signal_portfolio_backtest
 from domain.artifacts import WorkflowResult
@@ -19,6 +28,44 @@ from domain.research import MLDatasetResult, ModelFitResult, MultifactorComparis
 
 
 class MLDatasetTest(unittest.TestCase):
+    def test_multifactor_imports_active_lifecycle_factors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "gtja191_factors.yaml"
+            config_path.write_text(
+                "default_status: disabled\n"
+                "factors:\n"
+                "  gtja_042: {status: active, useful_horizons: [10, 20]}\n"
+                "  gtja_062: {status: watch, useful_horizons: [20]}\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                load_lifecycle_factors(config_path),
+                ("gtja_042",),
+            )
+            self.assertEqual(
+                load_lifecycle_factors(config_path, statuses=("active", "watch")),
+                ("gtja_042", "gtja_062"),
+            )
+            parser = argparse.ArgumentParser()
+            add_multifactor_arguments(parser)
+            args = parser.parse_args(
+                [
+                    "--factors",
+                    "alpha_040",
+                    "--factor-config",
+                    str(config_path),
+                    "--lifecycle-statuses",
+                    "active",
+                ]
+            )
+            self.assertEqual(
+                config_from_args(args).factors,
+                ("alpha_040", "gtja_042"),
+            )
+            self.assertFalse(hasattr(args, "no_progress"))
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(["--factors", "alpha_040", "--no-progress"])
+
     def test_dataset_to_training_to_signal_backtest_is_reproducible(self):
         dates = pd.bdate_range("2025-01-02", periods=40)
         day = np.arange(len(dates), dtype=float)
@@ -101,21 +148,22 @@ class MLDatasetTest(unittest.TestCase):
                 lot_size=100,
             )
             summary_exists = (backtest_dir / "portfolio_summary.json").exists()
-            multifactor_outputs = run_multifactor_fit(
-                data_dir=data_dir,
-                output_dir=multifactor_dir,
-                config=MultifactorFitConfig(
-                    factors=("alpha_101", "custom_002"),
-                    models=("ridge",),
-                    target_window=1,
-                    train_size=12,
-                    test_size=4,
-                    purge_days=2,
-                    signal_top_n=2,
-                    start_date=str(dates[2].date()),
-                    end_date=str(dates[-3].date()),
-                ),
-            )
+            with self.assertLogs("training", level="INFO") as captured_logs:
+                multifactor_outputs = run_multifactor_fit(
+                    data_dir=data_dir,
+                    output_dir=multifactor_dir,
+                    config=MultifactorFitConfig(
+                        factors=("alpha_101", "custom_002"),
+                        models=("ridge",),
+                        target_window=1,
+                        train_size=12,
+                        test_size=4,
+                        purge_days=2,
+                        signal_top_n=2,
+                        start_date=str(dates[2].date()),
+                        end_date=str(dates[-3].date()),
+                    ),
+                )
             leaderboard = pd.read_csv(multifactor_outputs["leaderboard_path"])
             multifactor_manifest = json.loads(
                 multifactor_outputs["manifest_path"].read_text(encoding="utf-8")
@@ -149,6 +197,11 @@ class MLDatasetTest(unittest.TestCase):
         self.assertEqual(leaderboard["model"].tolist(), ["ridge"])
         self.assertEqual(multifactor_manifest["target_col"], "next_open_return_1d_cs_rank")
         self.assertTrue(multifactor_signals_exists)
+        logs = "\n".join(captured_logs.output)
+        self.assertIn("Starting multi-factor fit", logs)
+        self.assertIn("Calculating factor alpha_101", logs)
+        self.assertIn("Model ridge has", logs)
+        self.assertIn("Multi-factor fit complete", logs)
 
 
 if __name__ == "__main__":

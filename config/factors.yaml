@@ -1,105 +1,51 @@
-# Alpha101 research lifecycle, reviewed from the 2026-07-10 long-only analysis.
-# active: core factors; watch: retained components/observations; disabled: do not run by default.
+# Alpha101 economic-interpretability lifecycle.
+#
+# `watch` means the factor has a direct, testable A-share hypothesis but is
+# not validated for production use. `disabled` (the default) means it remains
+# callable for formula-reproduction research only and is excluded from normal
+# batch/ML selection. No Alpha101 formula is `active` solely because of a
+# historical backtest.
+#
+# Disabled by default: opaque genetic-program expressions with arbitrary
+# decimal windows/weights, raw-price thresholds or powers, and formulas whose
+# fitted terms collapse algebraically. They can be explicitly re-enabled only
+# after a documented economic hypothesis and out-of-sample long-only test.
 default_status: disabled
 factors:
-  alpha_001: disabled
-  alpha_002: disabled
-  alpha_003: watch
+  # Volatility / price-location / short-horizon reversal hypotheses.
+  alpha_001: watch
   alpha_004: watch
-  alpha_005: disabled
+  alpha_009: watch
+  alpha_010: watch
+  alpha_018: watch
+  alpha_020: watch
+  alpha_023: watch
+  alpha_024: watch
+  alpha_033: watch
+  alpha_034: watch
+  alpha_053: watch
+  alpha_060: watch
+  alpha_101: watch
+
+  # Price-volume, liquidity and intraday-demand hypotheses.
+  alpha_002: watch
+  alpha_003: watch
   alpha_006: watch
-  alpha_007: disabled
-  alpha_008: disabled
-  alpha_009: disabled
-  alpha_010: disabled
-  alpha_011: disabled
-  alpha_012: disabled
-  alpha_013: active
+  alpha_007: watch
+  alpha_011: watch
+  alpha_012: watch
+  alpha_013: watch
   alpha_014: watch
   alpha_015: watch
-  alpha_016: active
-  alpha_017: disabled
-  alpha_018: watch
-  alpha_019: watch
-  alpha_020: disabled
-  alpha_021: disabled
-  alpha_022: disabled
-  alpha_023: disabled
-  alpha_024: watch
-  alpha_025: disabled
+  alpha_016: watch
+  alpha_022: watch
   alpha_026: watch
   alpha_027: watch
-  alpha_028: disabled
-  alpha_029: watch
-  alpha_030: disabled
-  alpha_031: disabled
-  alpha_032: disabled
-  alpha_033: disabled
-  alpha_034: disabled
-  alpha_035: disabled
-  alpha_036: disabled
+  alpha_030: watch
+  alpha_035: watch
   alpha_037: watch
-  alpha_038: disabled
-  alpha_039: disabled
-  alpha_040: active
-  alpha_041: disabled
-  alpha_042: watch
-  alpha_043: disabled
-  alpha_044: active
-  alpha_045: disabled
-  alpha_046: disabled
-  alpha_047: disabled
-  alpha_048: disabled
-  alpha_049: disabled
+  alpha_040: watch
+  alpha_044: watch
   alpha_050: watch
-  alpha_051: disabled
   alpha_052: watch
-  alpha_053: disabled
-  alpha_054: disabled
   alpha_055: watch
-  alpha_056: disabled
-  alpha_057: disabled
-  alpha_058: watch
-  alpha_059: watch
-  alpha_060: disabled
-  alpha_061: watch
-  alpha_062: disabled
-  alpha_063: disabled
-  alpha_064: disabled
-  alpha_065: watch
-  alpha_066: disabled
-  alpha_067: watch
-  alpha_068: disabled
-  alpha_069: watch
-  alpha_070: disabled
-  alpha_071: disabled
-  alpha_072: disabled
-  alpha_073: watch
-  alpha_074: watch
-  alpha_075: watch
-  alpha_076: watch
-  alpha_077: watch
-  alpha_078: disabled
-  alpha_079: disabled
-  alpha_080: watch
-  alpha_081: watch
-  alpha_082: disabled
-  alpha_083: disabled
-  alpha_084: disabled
-  alpha_085: disabled
-  alpha_086: disabled
-  alpha_087: watch
-  alpha_088: watch
-  alpha_089: disabled
-  alpha_090: disabled
-  alpha_091: disabled
-  alpha_092: disabled
-  alpha_093: disabled
-  alpha_094: watch
-  alpha_095: disabled
-  alpha_096: disabled
-  alpha_097: disabled
-  alpha_098: disabled
-  alpha_099: disabled
-  alpha_100: disabled
-  alpha_101: disabled

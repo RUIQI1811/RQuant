@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import pickle
 import re
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +33,9 @@ import models.elasticnet as elasticnet_module
 import models.lightgbm_model as lightgbm_module
 import models.linear_ridge as ridge_module
 import models.mlp_torch as mlp_module
+
+
+logger = logging.getLogger(__name__)
 
 
 MODEL_NAMES = ("ridge", "elasticnet", "lightgbm", "mlp")
@@ -148,6 +153,13 @@ def run_walk_forward_training(
     labels_file = Path(labels_path)
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
+    started = time.perf_counter()
+    logger.info(
+        "Preparing walk-forward training: model=%s, features=%d, target=%s",
+        config.model,
+        len(config.feature_cols),
+        config.target_col,
+    )
     frame, input_audit = _load_training_frame(features_file, labels_file, config)
     windows = build_walk_forward_windows(
         frame[config.date_col],
@@ -170,7 +182,26 @@ def run_walk_forward_training(
     windows_root = destination / "windows"
     windows_root.mkdir(parents=True, exist_ok=True)
 
-    for window_id, window in enumerate(windows):
+    logger.info(
+        "Model %s has %d walk-forward windows (%d training rows, %d trading dates)",
+        config.model,
+        len(windows),
+        input_audit["training_rows"],
+        input_audit["trading_dates"],
+    )
+    for position, window in enumerate(windows, start=1):
+        window_id = position - 1
+        window_started = time.perf_counter()
+        logger.info(
+            "[%s %d/%d] train=%s..%s, test=%s..%s",
+            config.model,
+            position,
+            len(windows),
+            window.train_start.strftime("%Y-%m-%d"),
+            window.train_end.strftime("%Y-%m-%d"),
+            window.test_start.strftime("%Y-%m-%d"),
+            window.test_end.strftime("%Y-%m-%d"),
+        )
         window_dir = windows_root / f"window_{window_id:03d}"
         window_dir.mkdir(parents=True, exist_ok=True)
         predictions_path = window_dir / "predictions.csv"
@@ -257,6 +288,16 @@ def run_walk_forward_training(
         }
         window_rows.append(window_row)
         window_metric_rows.append({"window_id": window_id, **metrics})
+        logger.info(
+            "[%s %d/%d] %s in %.2fs: predictions=%d, rank_ic=%s",
+            config.model,
+            position,
+            len(windows),
+            "reused" if reused else "trained",
+            time.perf_counter() - window_started,
+            len(predictions),
+            metrics.get("rank_ic_mean"),
+        )
 
     predictions = pd.concat(prediction_frames, ignore_index=True).sort_values(
         [config.date_col, config.symbol_col],
@@ -339,6 +380,16 @@ def run_walk_forward_training(
         prediction_count=len(predictions),
         signal_count=len(signals),
         out_of_sample_metrics=overall_metrics,
+    )
+    logger.info(
+        "Walk-forward model %s complete in %.2fs: windows=%d, reused=%d, predictions=%d, signals=%d, output=%s",
+        config.model,
+        time.perf_counter() - started,
+        len(windows),
+        summary["reused_window_count"],
+        len(predictions),
+        len(signals),
+        destination.resolve(),
     )
     return WorkflowResult.from_mapping(
         {

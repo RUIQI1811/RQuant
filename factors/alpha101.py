@@ -359,8 +359,10 @@ class Alpha101:
         return -ts_rank(decay_linear(correlation(neutral, self.d.volume, 3.92795), 7.89291), 5.50322)
 
     def alpha_059(self) -> Panel:
-        mixed = self.d.vwap * 0.728317 + self.d.vwap * (1 - 0.728317)
-        neutral = self._neutral(mixed, "industry")
+        # The two terms in the published expression are both VWAP, so its
+        # fitted mixing coefficient cancels exactly.  Keep the formula's
+        # output while making the actual input explicit.
+        neutral = self._neutral(self.d.vwap, "industry")
         return -ts_rank(decay_linear(correlation(neutral, self.d.volume, 4.25197), 16.2289), 8.19648)
 
     def alpha_060(self) -> Panel:
@@ -374,7 +376,7 @@ class Alpha101:
 
     def alpha_062(self) -> Panel:
         left = rank(correlation(self.d.vwap, ts_sum(self.d.adv(20), 22.4101), 9.91009))
-        comparison = (rank(self.d.open) + rank(self.d.open)) < (rank((self.d.high + self.d.low) / 2) + rank(self.d.high))
+        comparison = (2 * rank(self.d.open)) < (rank((self.d.high + self.d.low) / 2) + rank(self.d.high))
         right = rank(comparison.astype(float))
         return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
 
@@ -399,8 +401,9 @@ class Alpha101:
 
     def alpha_066(self) -> Panel:
         first = rank(decay_linear(delta(self.d.vwap, 3.51013), 7.23052))
-        mixed_low = self.d.low * 0.96633 + self.d.low * (1 - 0.96633)
-        second_input = _safe_div(mixed_low - self.d.vwap, self.d.open - (self.d.high + self.d.low) / 2)
+        # Both sides of the original weighted expression are low; the
+        # coefficient is therefore algebraically irrelevant.
+        second_input = _safe_div(self.d.low - self.d.vwap, self.d.open - (self.d.high + self.d.low) / 2)
         second = ts_rank(decay_linear(second_input, 11.4157), 6.72611)
         return -(first + second)
 
@@ -533,7 +536,8 @@ class Alpha101:
 
     def alpha_086(self) -> Panel:
         left = ts_rank(correlation(self.d.close, ts_sum(self.d.adv(20), 14.7444), 6.00049), 20.4195)
-        right = rank((self.d.open + self.d.close) - (self.d.vwap + self.d.open))
+        # Open cancels from the published expression.
+        right = rank(self.d.close - self.d.vwap)
         return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
 
     def alpha_087(self) -> Panel:

@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,9 @@ from factors.custom import CustomFactors, normalize_custom_factor_name
 from factors.gtja191 import GTJA191, build_gtja191_panels, normalize_gtja_name
 from labels.make_forward_return import make_forward_returns, make_next_open_returns
 from strategies.preselect import load_raw_data
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -84,9 +89,12 @@ def build_ml_dataset(
 ) -> WorkflowResult[MLDatasetResult]:
     """Calculate one-day-lagged factor features plus point-in-time labels."""
 
+    started = time.perf_counter()
+    logger.info("Loading raw market data from %s", Path(data_dir))
     raw_data = load_raw_data(str(data_dir), end_date=None)
     if not raw_data:
         raise ValueError("no raw market data found")
+    logger.info("Loaded raw market data for %d symbols", len(raw_data))
     metadata_file = Path(metadata_path) if metadata_path else None
     metadata = (
         pd.read_csv(metadata_file)
@@ -102,9 +110,16 @@ def build_ml_dataset(
 
     dates = base_panels.close.index
     symbols = base_panels.close.columns
+    logger.info(
+        "Prepared base panels: %d trading dates, %d symbols",
+        len(dates),
+        len(symbols),
+    )
     index = pd.MultiIndex.from_product([dates, symbols], names=["date", "symbol"])
     features = pd.DataFrame(index=index)
-    for factor in config.factors:
+    for position, factor in enumerate(config.factors, start=1):
+        factor_started = time.perf_counter()
+        logger.info("[%d/%d] Calculating factor %s", position, len(config.factors), factor)
         if factor.startswith("alpha_"):
             values = alpha_calculator.calculate(factor)
         elif factor.startswith("custom_"):
@@ -126,6 +141,13 @@ def build_ml_dataset(
             .shift(config.factor_lag_days)
         )
         features[factor] = _to_long(lagged, factor).reindex(index)
+        logger.info(
+            "[%d/%d] Factor %s complete in %.2fs",
+            position,
+            len(config.factors),
+            factor,
+            time.perf_counter() - factor_started,
+        )
 
     feature_frame = features.reset_index()
     feature_frame["symbol"] = feature_frame["symbol"].astype(str).str.zfill(6)
@@ -216,6 +238,13 @@ def build_ml_dataset(
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
     _atomic_write_json(manifest_path, manifest)
+    logger.info(
+        "ML dataset complete in %.2fs: feature_rows=%d, label_rows=%d, output=%s",
+        time.perf_counter() - started,
+        len(feature_frame),
+        len(label_frame),
+        destination.resolve(),
+    )
     result = MLDatasetResult(
         factors=tuple(config.factors),
         target_columns=tuple(all_label_columns),

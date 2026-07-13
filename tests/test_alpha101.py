@@ -16,10 +16,13 @@ from factors.alpha101 import (
     alpha101_to_long,
     build_alpha101_panels,
     decay_linear,
+    indneutralize,
     normalize_alpha_name,
     rank,
     ts_argmax,
 )
+from factors.catalog import load_factor_catalog
+from factors.operators import correlation, delta, safe_div, ts_rank
 
 
 def _complete_panels(days: int = 320, symbols: int = 6) -> Alpha101Panels:
@@ -120,6 +123,43 @@ class Alpha101CalculatorTest(unittest.TestCase):
         panels = Alpha101Panels(**{**self.panels.__dict__, "cap": None})
         with self.assertRaisesRegex(Alpha101DataError, "market-cap"):
             Alpha101(panels).calculate("alpha_056")
+
+    def test_algebraic_simplifications_preserve_alpha101_outputs(self):
+        calculator = self.calculator
+        expected_059 = -ts_rank(
+            decay_linear(correlation(indneutralize(self.panels.vwap, self.panels.industry, "industry"), self.panels.volume, 4.25197), 16.2289),
+            8.19648,
+        )
+        expected_066 = -(
+            rank(decay_linear(delta(self.panels.vwap, 3.51013), 7.23052))
+            + ts_rank(
+                decay_linear(
+                    safe_div(
+                        self.panels.low - self.panels.vwap,
+                        self.panels.open - (self.panels.high + self.panels.low) / 2,
+                    ),
+                    11.4157,
+                ),
+                6.72611,
+            )
+        )
+        pd.testing.assert_frame_equal(calculator.calculate("alpha_059"), expected_059)
+        pd.testing.assert_frame_equal(calculator.calculate("alpha_066"), expected_066)
+
+
+class Alpha101EconomicLifecycleTest(unittest.TestCase):
+    def test_default_catalog_only_selects_economically_interpretable_watch_factors(self):
+        path = Path(__file__).resolve().parents[1] / "config" / "factors.yaml"
+        catalog = load_factor_catalog(path)
+
+        self.assertEqual(catalog.default_status, "disabled")
+        self.assertEqual(catalog.status_for("alpha_040"), "watch")
+        self.assertEqual(catalog.status_for("alpha_059"), "disabled")
+        self.assertEqual(catalog.status_for("alpha_077"), "disabled")
+        self.assertEqual(
+            catalog.select(("alpha_040", "alpha_059", "alpha_077", "alpha_101")),
+            ("alpha_040", "alpha_101"),
+        )
 
 
 class Alpha101RawAdapterTest(unittest.TestCase):

@@ -3,6 +3,8 @@ import subprocess
 import unittest
 from pathlib import Path
 
+import yaml
+
 import numpy as np
 import pandas as pd
 
@@ -173,6 +175,20 @@ class GTJA191PanelsTest(unittest.TestCase):
         )
         self.assertEqual(panels.close.columns.tolist(), ["000001", "000002"])
         self.assertEqual(panels.external, GTJA191ExternalData())
+
+
+class GTJA191EconomicLifecycleTest(unittest.TestCase):
+    def test_default_config_keeps_only_interpretable_research_hypotheses(self):
+        path = Path(__file__).resolve().parents[1] / "config" / "gtja191_factors.yaml"
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        factors = payload["factors"]
+
+        self.assertEqual(payload["default_status"], "disabled")
+        self.assertEqual(set(factors.values()), {"watch"})
+        self.assertEqual(factors["gtja_042"], "watch")
+        self.assertNotIn("gtja_077", factors)
+        self.assertNotIn("gtja_086", factors)
+        self.assertNotIn("gtja_156", factors)
 
 
 class GTJA191FirstEightyTest(unittest.TestCase):

@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import yaml
 
 from domain.artifacts import WorkflowResult
 from domain.research import MultifactorComparisonResult
@@ -21,6 +24,9 @@ from training.train_walk_forward import (
     WalkForwardTrainingConfig,
     run_walk_forward_training,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -93,8 +99,16 @@ def run_multifactor_fit(
 ) -> WorkflowResult[MultifactorComparisonResult]:
     """Build the factor matrix, train each model, and rank OOS diagnostics."""
 
+    started = time.perf_counter()
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Starting multi-factor fit: factors=%d, models=%s, target_window=%dd, output=%s",
+        len(config.factors),
+        ",".join(config.models),
+        config.target_window,
+        destination.resolve(),
+    )
     dataset_config = MLDatasetConfig(
         factors=config.factors,
         target_windows=(config.target_window,),
@@ -113,10 +127,22 @@ def run_multifactor_fit(
         benchmark_file=benchmark_file,
         style_factor_file=style_factor_file,
     )
+    logger.info(
+        "Shared dataset ready: features=%s, labels=%s",
+        dataset_outputs["features_path"],
+        dataset_outputs["labels_path"],
+    )
     target_col = _target_column(config)
     leaderboard_rows: list[dict[str, object]] = []
     model_outputs: dict[str, dict[str, Path]] = {}
-    for model_name in config.models:
+    for position, model_name in enumerate(config.models, start=1):
+        model_started = time.perf_counter()
+        logger.info(
+            "[%d/%d] Starting model %s",
+            position,
+            len(config.models),
+            model_name,
+        )
         outputs = run_walk_forward_training(
             features_path=dataset_outputs["features_path"],
             labels_path=dataset_outputs["labels_path"],
@@ -163,6 +189,16 @@ def run_multifactor_fit(
                 "summary_path": str(outputs["summary_path"].resolve()),
             }
         )
+        logger.info(
+            "[%d/%d] Model %s complete in %.2fs: rank_ic=%s, predictions=%s, signals=%s",
+            position,
+            len(config.models),
+            model_name,
+            time.perf_counter() - model_started,
+            metrics.get("rank_ic_mean"),
+            summary.get("prediction_count"),
+            summary.get("signal_count"),
+        )
 
     leaderboard = pd.DataFrame(leaderboard_rows).sort_values(
         ["rank_ic_mean", "model"],
@@ -198,6 +234,12 @@ def run_multifactor_fit(
         target_column=target_col,
         leaderboard=tuple(leaderboard.to_dict("records")),
     )
+    logger.info(
+        "Multi-factor fit complete in %.2fs: leaderboard=%s, manifest=%s",
+        time.perf_counter() - started,
+        leaderboard_path.resolve(),
+        manifest_path.resolve(),
+    )
     return WorkflowResult.from_mapping(
         {
             "result": result,
@@ -213,6 +255,35 @@ def _target_column(config: MultifactorFitConfig) -> str:
     prefix = "next_open_return" if config.label_mode == "next_open" else "forward_return"
     raw = f"{prefix}_{config.target_window}d"
     return raw if config.target_transform == "raw" else f"{raw}_cs_{config.target_transform}"
+
+
+def load_lifecycle_factors(
+    path: str | Path,
+    *,
+    statuses: tuple[str, ...] = ("active",),
+) -> tuple[str, ...]:
+    """Return configured factors whose lifecycle status is explicitly selected."""
+
+    selected_statuses = {str(value).strip().lower() for value in statuses}
+    if not selected_statuses:
+        raise ValueError("lifecycle statuses must not be empty")
+    invalid = selected_statuses.difference({"active", "watch", "disabled"})
+    if invalid:
+        raise ValueError(f"unsupported lifecycle statuses: {sorted(invalid)}")
+
+    config_path = Path(path)
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    default = str(payload.get("default_status", "active")).strip().lower()
+    entries = payload.get("factors", {}) or {}
+    if not isinstance(entries, dict):
+        raise ValueError(f"lifecycle config factors must be a mapping: {config_path}")
+
+    factors: list[str] = []
+    for name, entry in entries.items():
+        status = entry.get("status", default) if isinstance(entry, dict) else entry
+        if str(status).strip().lower() in selected_statuses:
+            factors.append(str(name).strip())
+    return tuple(factors)
 
 
 def _atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:
@@ -232,7 +303,24 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--metadata", default="config/stocklist.csv")
     parser.add_argument("--benchmark-file", default=None)
     parser.add_argument("--style-factor-file", default=None)
-    parser.add_argument("--factors", nargs="+", required=True)
+    parser.add_argument(
+        "--factors",
+        nargs="+",
+        default=[],
+        help="Explicit factor names; can be combined with --factor-config",
+    )
+    parser.add_argument(
+        "--factor-config",
+        default=None,
+        help="Lifecycle YAML whose selected factors are added to the ML feature set",
+    )
+    parser.add_argument(
+        "--lifecycle-statuses",
+        nargs="+",
+        choices=("active", "watch", "disabled"),
+        default=["active"],
+        help="Statuses to import from --factor-config; default: active",
+    )
     parser.add_argument("--models", nargs="+", choices=MODEL_NAMES, default=["ridge", "lightgbm", "mlp"])
     parser.add_argument("--target-window", type=int, default=20)
     parser.add_argument("--label-mode", choices=("next_open", "close_to_close"), default="next_open")
@@ -263,8 +351,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def config_from_args(args: argparse.Namespace) -> MultifactorFitConfig:
+    factors = list(args.factors)
+    if args.factor_config:
+        factors.extend(
+            load_lifecycle_factors(
+                args.factor_config,
+                statuses=tuple(args.lifecycle_statuses),
+            )
+        )
     return MultifactorFitConfig(
-        factors=tuple(args.factors),
+        factors=tuple(dict.fromkeys(factors)),
         models=tuple(args.models),
         target_window=args.target_window,
         label_mode=args.label_mode,

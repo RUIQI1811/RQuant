@@ -444,6 +444,12 @@ factor_report/alpha101_batch/
 config/factors.yaml
 ```
 
+Alpha101 的默认库是“经济解释优先”的研究池：只把具备明确价格位置、趋势/反转、
+波动或价量/流动性假设的公式列为 `watch`；其余不透明的遗传规划表达式（任意小数
+窗口/权重、原始价格阈值或高次幂）默认为 `disabled`。`watch` 仍须通过样本外的
+长多 TopN / Top Quantile 检验后才可升级为 `active`。如需复现被禁用的原始 WorldQuant
+公式，可在一次性实验中追加 `--ignore-factor-config`，不要将其作为默认特征池。
+
 ### GTJA191 批处理
 
 ```bash
@@ -464,6 +470,10 @@ factor_report/gtja191_batch/
 ```text
 config/gtja191_factors.yaml
 ```
+
+GTJA191 与 Alpha101 一样按经济解释管理：默认只运行 `watch` 的简单价格位置、
+趋势/反转、波动与价量/流动性假设；任意拟合权重、原始价格阈值/高次幂和不透明嵌套
+表达式默认 `disabled`。当前不设置 `active`，历史表现不能替代样本外长多验证。
 
 ### 因子筛选和组合回测
 
@@ -531,6 +541,21 @@ LightGBM 和 Torch MLP。默认将特征和标签都转换为每日横截面百�
 ```bash
 python -m rquant fit-multifactor --data data/raw --metadata config/stocklist.csv --factors alpha_040 alpha_069 alpha_077 custom_001 custom_002 --models ridge elasticnet lightgbm mlp --target-window 20 --feature-transform rank --target-transform rank --train-size 504 --test-size 21 --signal-top-n 10 --start 2018-01-01 --end 2026-06-30 --output data/ml/multifactor_20d
 ```
+
+运行时不显示进度条，而是持续输出并记录当前因子、模型、训练/测试窗口、断点复用状态、耗时和产物路径。终端日志同步写入
+`data/runs/<run-id>/run.log`。
+
+GTJA191 可直接导入其生命周期配置中的可解释研究因子；当前
+`config/gtja191_factors.yaml` 的 `watch` 项是待样本外验证的 ML 特征池。也可以将它与
+显式指定的 Alpha101/custom 特征组合：
+
+```bash
+python -m rquant fit-multifactor --data data/raw --metadata config/stocklist.csv --factor-config config/gtja191_factors.yaml --lifecycle-statuses watch --models ridge elasticnet lightgbm mlp --target-window 20 --feature-transform rank --target-transform rank --train-size 504 --test-size 21 --signal-top-n 10 --start 2018-01-01 --end 2026-06-30 --output data/ml/gtja191_watch_20d
+```
+
+默认只导入 `active`；本配置当前没有 `active`，因此应显式使用
+`--lifecycle-statuses watch`。导入仍会统一执行一日因子滞后和 walk-forward，
+不会把 ML 分数反写到因子生命周期配置。
 
 `next_open_return_20d` 会自动使用至少 21 个交易日的 purge gap。主要产物：
 

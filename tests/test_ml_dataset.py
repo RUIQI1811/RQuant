@@ -17,6 +17,7 @@ from training.multifactor import (
     MultifactorFitConfig,
     add_arguments as add_multifactor_arguments,
     config_from_args,
+    load_factor_selection_file,
     load_lifecycle_factors,
     run_multifactor_fit,
 )
@@ -38,6 +39,11 @@ class MLDatasetTest(unittest.TestCase):
                 "  gtja_062: {status: watch, useful_horizons: [20]}\n",
                 encoding="utf-8",
             )
+            selection_path = Path(temp_dir) / "deduplicated_factors.csv"
+            pd.DataFrame({"factor": ["external_a", "alpha_040"]}).to_csv(
+                selection_path,
+                index=False,
+            )
             self.assertEqual(
                 load_lifecycle_factors(config_path),
                 ("gtja_042",),
@@ -56,12 +62,21 @@ class MLDatasetTest(unittest.TestCase):
                     str(config_path),
                     "--lifecycle-statuses",
                     "active",
+                    "--factor-selection-file",
+                    str(selection_path),
                 ]
             )
             self.assertEqual(
                 config_from_args(args).factors,
-                ("alpha_040", "gtja_042"),
+                ("alpha_040", "external_a", "gtja_042"),
             )
+            self.assertEqual(
+                load_factor_selection_file(selection_path),
+                ("external_a", "alpha_040"),
+            )
+            self.assertEqual(config_from_args(args).mlp_epochs, 10)
+            self.assertEqual(config_from_args(args).elasticnet_alpha, 0.001)
+            self.assertEqual(config_from_args(args).elasticnet_l1_ratio, 0.5)
             self.assertFalse(hasattr(args, "no_progress"))
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args(["--factors", "alpha_040", "--no-progress"])
@@ -160,6 +175,8 @@ class MLDatasetTest(unittest.TestCase):
                         test_size=4,
                         purge_days=2,
                         signal_top_n=2,
+                        run_backtests=True,
+                        backtest_initial_cash=500_000,
                         start_date=str(dates[2].date()),
                         end_date=str(dates[-3].date()),
                     ),
@@ -170,6 +187,15 @@ class MLDatasetTest(unittest.TestCase):
             )
             multifactor_signals_exists = (
                 multifactor_dir / "models/ridge/signals.csv"
+            ).exists()
+            gross_summary_exists = (
+                multifactor_dir / "backtests/ridge/gross/portfolio_summary.json"
+            ).exists()
+            net_summary_exists = (
+                multifactor_dir / "backtests/ridge/net/portfolio_summary.json"
+            ).exists()
+            profitable_models_exists = (
+                multifactor_dir / "profitable_models.csv"
             ).exists()
 
         self.assertEqual(features["symbol"].str.len().unique().tolist(), [6])
@@ -197,6 +223,18 @@ class MLDatasetTest(unittest.TestCase):
         self.assertEqual(leaderboard["model"].tolist(), ["ridge"])
         self.assertEqual(multifactor_manifest["target_col"], "next_open_return_1d_cs_rank")
         self.assertTrue(multifactor_signals_exists)
+        self.assertTrue(gross_summary_exists)
+        self.assertTrue(net_summary_exists)
+        self.assertTrue(profitable_models_exists)
+        self.assertEqual(leaderboard.loc[0, "backtest_status"], "success")
+        self.assertGreaterEqual(
+            leaderboard.loc[0, "gross_total_return"],
+            leaderboard.loc[0, "net_total_return"],
+        )
+        self.assertIn("backtests", multifactor_manifest["models"]["ridge"])
+        self.assertEqual(
+            multifactor_manifest["profitable_models"], "profitable_models.csv"
+        )
         logs = "\n".join(captured_logs.output)
         self.assertIn("Starting multi-factor fit", logs)
         self.assertIn("Calculating factor alpha_101", logs)

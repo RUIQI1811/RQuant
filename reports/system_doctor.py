@@ -29,6 +29,7 @@ OPTIONAL_CONFIGS = ("config/dashboard.yaml", "config/gemini_review.yaml")
 IMPORT_NAMES = {
     "google-genai": "google.genai",
     "protobuf": "google.protobuf",
+    "pyqlib": "qlib",
     "pyyaml": "yaml",
     "scikit-learn": "sklearn",
 }
@@ -97,6 +98,7 @@ def run_system_doctor(
 def _check_dependencies(root: Path) -> dict[str, Any]:
     required_path = root / "requirements.txt"
     optional_path = root / "requirements-ml.txt"
+    qlib_path = root / "requirements-qlib.txt"
     items: list[dict[str, Any]] = []
     errors: list[str] = []
     warnings: list[str] = []
@@ -106,6 +108,8 @@ def _check_dependencies(root: Path) -> dict[str, Any]:
     else:
         required_specs = _parse_requirements(required_path)
     optional_specs = _parse_requirements(optional_path) if optional_path.is_file() else []
+    if qlib_path.is_file():
+        optional_specs.extend(_parse_requirements(qlib_path))
     if not optional_path.is_file():
         warnings.append("missing requirements-ml.txt")
 

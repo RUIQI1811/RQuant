@@ -78,6 +78,17 @@ class CliTest(unittest.TestCase):
         )
         factor_args = parser.parse_args(["factor-test", "--factor", "custom_002"])
         batch_args = parser.parse_args(["factor-batch", "--family", "gtja191"])
+        external_batch_args = parser.parse_args(
+            [
+                "factor-batch",
+                "--family",
+                "external",
+                "--factor-file",
+                "external.csv",
+                "--context-file",
+                "context.csv",
+            ]
+        )
 
         self.assertEqual(fetch_args.command, "fetch-data")
         self.assertEqual(fetch_args.max_symbols, 5)
@@ -87,6 +98,9 @@ class CliTest(unittest.TestCase):
         self.assertEqual(factor_args.factor, "custom_002")
         self.assertEqual(batch_args.family, "gtja191")
         self.assertEqual(batch_args.factor_config, None)
+        self.assertEqual(external_batch_args.family, "external")
+        self.assertEqual(external_batch_args.factor_file, "external.csv")
+        self.assertEqual(external_batch_args.context_file, "context.csv")
 
     def test_factor_test_dispatches_to_existing_runner(self):
         args = cli.build_parser().parse_args(["factor-test", "--factor", "custom_002"])
@@ -111,6 +125,58 @@ class CliTest(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "2"):
                     cli.cmd_fetch_data(args)
 
+    def test_fetch_context_parser_exposes_resumable_daily_basic_contract(self):
+        args = cli.build_parser().parse_args(
+            [
+                "fetch-context",
+                "--start",
+                "20180101",
+                "--resume",
+                "--max-dates",
+                "2",
+            ]
+        )
+
+        self.assertEqual(args.command, "fetch-context")
+        self.assertEqual(args.start, "20180101")
+        self.assertTrue(args.resume)
+        self.assertEqual(args.max_dates, 2)
+        self.assertEqual(args.workers, 8)
+
+    def test_fetch_benchmark_parser_exposes_index_contract(self):
+        args = cli.build_parser().parse_args(
+            [
+                "fetch-benchmark",
+                "--start",
+                "20180101",
+                "--index-code",
+                "000300.SH",
+                "--resume",
+            ]
+        )
+
+        self.assertEqual(args.command, "fetch-benchmark")
+        self.assertEqual(args.index_code, "000300.SH")
+        self.assertEqual(args.out, "data/context/benchmark_000300.csv")
+        self.assertTrue(args.resume)
+
+    def test_build_style_factors_parser_exposes_point_in_time_contract(self):
+        args = cli.build_parser().parse_args(
+            [
+                "build-style-factors",
+                "--context",
+                "data/context/daily_basic",
+                "--min-stocks-per-portfolio",
+                "10",
+            ]
+        )
+
+        self.assertEqual(args.command, "build-style-factors")
+        self.assertEqual(args.size_quantile, 0.5)
+        self.assertEqual(args.value_low_quantile, 0.3)
+        self.assertEqual(args.value_high_quantile, 0.7)
+        self.assertEqual(args.min_stocks_per_portfolio, 10)
+
     def test_factor_batch_dispatches_to_lifecycle_aware_runner(self):
         args = cli.build_parser().parse_args(["factor-batch", "--family", "alpha101"])
         with patch("scripts.test_factor_batch.run_from_args", return_value=0) as runner:
@@ -123,6 +189,11 @@ class CliTest(unittest.TestCase):
                 "--factors",
                 "alpha_101",
                 "custom_002",
+                "external_a",
+                "--factor-file",
+                "external.csv",
+                "--context-file",
+                "context.csv",
                 "--target-windows",
                 "1",
                 "20",
@@ -132,7 +203,9 @@ class CliTest(unittest.TestCase):
         )
 
         self.assertEqual(args.command, "make-ml-dataset")
-        self.assertEqual(args.factors, ["alpha_101", "custom_002"])
+        self.assertEqual(args.factors, ["alpha_101", "custom_002", "external_a"])
+        self.assertEqual(args.factor_file, "external.csv")
+        self.assertEqual(args.context_file, "context.csv")
         self.assertEqual(args.target_windows, [1, 20])
         self.assertEqual(args.factor_lag_days, 1)
         self.assertEqual(args.label_mode, "next_open")
@@ -166,6 +239,10 @@ class CliTest(unittest.TestCase):
                 "model_ridge",
                 "--hold-days",
                 "5",
+                "--stamp-tax-rate",
+                "0.0006",
+                "--transfer-fee-rate",
+                "0.00002",
             ]
         )
         fake_result = type(
@@ -198,6 +275,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(runner.call_args.kwargs["signals_path"], "signals.csv")
         self.assertEqual(runner.call_args.kwargs["source"], "model_ridge")
         self.assertEqual(runner.call_args.kwargs["hold_days"], 5)
+        self.assertEqual(runner.call_args.kwargs["stamp_tax_rate"], 0.0006)
+        self.assertEqual(runner.call_args.kwargs["transfer_fee_rate"], 0.00002)
 
     def test_train_model_parser_exposes_purge_and_model_contract(self):
         args = cli.build_parser().parse_args(
@@ -215,7 +294,7 @@ class CliTest(unittest.TestCase):
                 "--target-col",
                 "forward_return_20d",
                 "--model",
-                "ridge",
+                "doubleensemble",
             ]
         )
 
@@ -226,6 +305,10 @@ class CliTest(unittest.TestCase):
         self.assertEqual(args.train_size, 504)
         self.assertEqual(args.test_size, 21)
         self.assertEqual(args.lightgbm_n_jobs, 1)
+        self.assertEqual(args.qlib_valid_ratio, 0.2)
+        self.assertEqual(args.doubleensemble_num_models, 6)
+        self.assertEqual(args.elasticnet_alpha, 0.001)
+        self.assertEqual(args.elasticnet_l1_ratio, 0.5)
 
     def test_factor_ensemble_parser_requires_explicit_auditable_components(self):
         args = cli.build_parser().parse_args(

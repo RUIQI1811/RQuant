@@ -29,13 +29,23 @@ from reports.gtja191_batch import (  # noqa: E402
 import factors.operators as factor_operators  # noqa: E402
 from factors.alpha101 import ALPHA101_NAMES, Alpha101, build_alpha101_panels  # noqa: E402
 from factors.catalog import FactorCatalog, load_factor_catalog  # noqa: E402
+from factors.external import (  # noqa: E402
+    load_external_factor_file,
+    load_research_context_file,
+    merge_context_with_raw_data,
+    normalize_external_factor_name,
+    research_context_signature,
+)
 from factors.gtja191 import (  # noqa: E402
     GTJA191,
     GTJA191_NAMES,
     build_gtja191_panels,
+    gtja_factor_category,
     normalize_gtja_name,
 )
 from strategies.preselect import load_raw_data  # noqa: E402
+from reports.external_factor_batch import run_external_factor_batch  # noqa: E402
+from reports.factor_tester import FactorTesterConfig  # noqa: E402
 
 
 ALPHA101_OUTPUT = "factor_report/alpha101_batch"
@@ -55,6 +65,21 @@ def _optional_csv(path: str | None) -> pd.DataFrame | None:
     return pd.read_csv(path) if path else None
 
 
+def _optional_metadata(path: str | Path | None) -> pd.DataFrame | None:
+    if not path:
+        return None
+    metadata_path = Path(path)
+    if not metadata_path.exists():
+        return None
+    if bool(getattr(metadata_path.stat(), "st_flags", 0) & 0x40000000):
+        logging.warning(
+            "optional metadata is a macOS dataless placeholder and will be skipped: %s",
+            metadata_path,
+        )
+        return None
+    return pd.read_csv(metadata_path)
+
+
 def _gtja_factor_statuses(path: str, factors: tuple[str, ...]) -> dict[str, str]:
     config_path = Path(path)
     if not config_path.exists():
@@ -71,15 +96,59 @@ def _gtja_factor_statuses(path: str, factors: tuple[str, ...]) -> dict[str, str]
     return statuses
 
 
+def _gtja_factor_categories(path: str, factors: tuple[str, ...]) -> dict[str, str]:
+    config_path = Path(path)
+    if not config_path.exists():
+        return {name: gtja_factor_category(name) for name in factors}
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    entries = payload.get("factors", {}) or {}
+    configured_categories = payload.get("categories", {}) or {}
+    categories = {}
+    for name in factors:
+        entry = entries.get(name, {})
+        category = configured_categories.get(name)
+        if category is None:
+            category = (
+                entry.get("category")
+                if isinstance(entry, dict)
+                else None
+            )
+        categories[name] = str(category or gtja_factor_category(name)).strip()
+    return categories
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--family",
-        choices=("alpha101", "gtja191"),
+        choices=("alpha101", "gtja191", "external"),
         default="alpha101",
         help="Factor family to evaluate; default: alpha101",
     )
     parser.add_argument("--data", default="data/raw", help="Raw per-symbol OHLCV CSV directory")
     parser.add_argument("--metadata", default="config/stocklist.csv", help="Optional classification CSV")
+    parser.add_argument(
+        "--factor-file",
+        default=None,
+        help="External family: wide/long factor CSV with date and symbol keys",
+    )
+    parser.add_argument(
+        "--factor-layout",
+        choices=("auto", "wide", "long"),
+        default="auto",
+    )
+    parser.add_argument("--date-col", default="date", help="External factor date column")
+    parser.add_argument("--symbol-col", default="symbol", help="External factor symbol column")
+    parser.add_argument("--factor-name-col", default="factor")
+    parser.add_argument("--factor-value-col", default="factor_value")
+    parser.add_argument(
+        "--context-file",
+        default=None,
+        help="Optional point-in-time date,symbol context CSV for market cap, sector, or regime",
+    )
+    parser.add_argument("--context-date-col", default="date")
+    parser.add_argument("--context-symbol-col", default="symbol")
+    parser.add_argument("--industry-col", default="industry", help="External sector/industry column")
+    parser.add_argument("--market-cap-col", default="market_cap", help="External daily market-cap column")
     parser.add_argument(
         "--benchmark-file",
         default=None,
@@ -93,7 +162,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--output",
         default=None,
-        help=f"Batch output directory; defaults to {ALPHA101_OUTPUT} or {GTJA191_OUTPUT}",
+        help=(
+            f"Batch output directory; defaults to {ALPHA101_OUTPUT}, "
+            f"{GTJA191_OUTPUT}, or factor_report/external_batch"
+        ),
     )
     parser.add_argument(
         "--factor-config",
@@ -131,19 +203,25 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default=[1, 5, 10, 20, 50, 100],
         help="Long-only TopN buckets to report, default: 1 5 10 20 50 100",
     )
-    parser.add_argument("--start-date", default=None, help="Alpha101 only: first evaluation date")
-    parser.add_argument("--end-date", default=None, help="Alpha101 only: last evaluation date")
-    parser.add_argument("--winsorize", action="store_true", help="Alpha101 only")
-    parser.add_argument("--zscore", action="store_true", help="Alpha101 only")
+    parser.add_argument("--start-date", default=None, help="Alpha101/external first evaluation date")
+    parser.add_argument("--end-date", default=None, help="Alpha101/external last evaluation date")
+    parser.add_argument("--winsorize", action="store_true", help="Alpha101/external")
+    parser.add_argument("--zscore", action="store_true", help="Alpha101/external")
     parser.add_argument("--min-periods", type=int, default=3)
     parser.add_argument("--min-listing-days", type=int, default=60)
-    parser.add_argument("--liquidity-lookback-days", type=int, default=20, help="Alpha101 only")
-    parser.add_argument("--min-liquidity", type=float, default=0.0, help="Alpha101 only")
-    parser.add_argument("--commission-rate", type=float, default=0.0003, help="Alpha101 only")
-    parser.add_argument("--slippage-rate", type=float, default=0.0005, help="Alpha101 only")
-    parser.add_argument("--stamp-tax-rate", type=float, default=0.0005, help="Alpha101 only")
-    parser.add_argument("--oos-start-date", default=None, help="Alpha101 only")
-    parser.add_argument("--oos-fraction", type=float, default=0.3, help="Alpha101 only")
+    parser.add_argument("--liquidity-lookback-days", type=int, default=20, help="Alpha101/external")
+    parser.add_argument("--min-liquidity", type=float, default=0.0, help="Alpha101/external")
+    parser.add_argument("--commission-rate", type=float, default=0.0003, help="Alpha101/external")
+    parser.add_argument("--slippage-rate", type=float, default=0.0005, help="Alpha101/external")
+    parser.add_argument("--stamp-tax-rate", type=float, default=0.0005, help="Alpha101/external")
+    parser.add_argument("--market-cap-groups", type=int, default=3)
+    parser.add_argument("--market-regime-col", default="market_regime")
+    parser.add_argument("--market-regime-lookback-days", type=int, default=60)
+    parser.add_argument("--market-regime-min-periods", type=int, default=20)
+    parser.add_argument("--bull-return-threshold", type=float, default=0.10)
+    parser.add_argument("--bear-return-threshold", type=float, default=-0.10)
+    parser.add_argument("--oos-start-date", default=None, help="Alpha101/external")
+    parser.add_argument("--oos-fraction", type=float, default=0.3, help="Alpha101/external")
     parser.add_argument("--force", action="store_true", help="Recompute even when a matching report exists")
     parser.add_argument("--fail-fast", action="store_true", help="Stop at the first factor failure")
     parser.add_argument(
@@ -164,6 +242,60 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help="List every factor with its configured lifecycle status",
     )
     return parser
+
+
+def _external_catalog(
+    path: str | None,
+    factors: tuple[str, ...],
+) -> tuple[dict[str, str], dict[str, str]]:
+    statuses = {factor: "active" for factor in factors}
+    categories = {factor: "unclassified" for factor in factors}
+    if not path:
+        return statuses, categories
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"external factor config not found: {config_path}")
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    default_status = str(payload.get("default_status", "active")).strip().lower()
+    entries = payload.get("factors", {}) or {}
+    configured_categories = payload.get("categories", {}) or {}
+    if default_status not in {"active", "watch", "disabled"}:
+        raise ValueError(f"invalid external default_status: {default_status}")
+    if not isinstance(entries, dict) or not isinstance(configured_categories, dict):
+        raise ValueError("external factor config factors/categories must be mappings")
+    for factor in factors:
+        entry = entries.get(factor, default_status)
+        status = entry.get("status", default_status) if isinstance(entry, dict) else entry
+        status = str(status).strip().lower()
+        if status not in {"active", "watch", "disabled"}:
+            raise ValueError(f"invalid status for {factor}: {status}")
+        category = configured_categories.get(factor)
+        if category is None and isinstance(entry, dict):
+            category = entry.get("category")
+        statuses[factor] = status
+        categories[factor] = str(category or "unclassified").strip()
+    return statuses, categories
+
+
+def _context_from_args(args: argparse.Namespace) -> pd.DataFrame | None:
+    if not args.context_file:
+        return None
+    return load_research_context_file(
+        args.context_file,
+        date_col=args.context_date_col,
+        symbol_col=args.context_symbol_col,
+    )
+
+
+def _data_signature_with_context(
+    data_dir: str | Path,
+    metadata_path: str | Path | None,
+    context_file: str | Path | None,
+) -> str:
+    signature = directory_signature(data_dir, metadata_path)
+    if context_file:
+        signature = f"{signature}:context={research_context_signature(context_file)}"
+    return signature
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -189,9 +321,9 @@ def _run_alpha101(
     except (FileNotFoundError, KeyError, ValueError) as exc:
         _argument_error(parser, str(exc))
     if args.list_factor_status:
-        print("factor,status")
+        print("factor,status,category")
         for factor, status in catalog.status_map().items():
-            print(f"{factor},{status}")
+            print(f"{factor},{status},{catalog.category_for(factor)}")
         return 0
 
     try:
@@ -229,9 +361,10 @@ def _run_alpha101(
         logging.warning("smoke-test universe limited to %d symbols", len(raw_data))
     else:
         raw_data = load_raw_data(args.data)
+    raw_data = merge_context_with_raw_data(raw_data, _context_from_args(args))
 
     metadata_path = Path(args.metadata) if args.metadata else None
-    metadata = pd.read_csv(metadata_path) if metadata_path and metadata_path.exists() else None
+    metadata = _optional_metadata(metadata_path)
     panels = build_alpha101_panels(raw_data, metadata=metadata)
 
     config = Alpha101BatchConfig(
@@ -249,6 +382,14 @@ def _run_alpha101(
         commission_rate=args.commission_rate,
         slippage_rate=args.slippage_rate,
         stamp_tax_rate=args.stamp_tax_rate,
+        industry_col=args.industry_col,
+        market_cap_col=args.market_cap_col,
+        market_cap_groups=args.market_cap_groups,
+        market_regime_col=args.market_regime_col,
+        market_regime_lookback_days=args.market_regime_lookback_days,
+        market_regime_min_periods=args.market_regime_min_periods,
+        bull_return_threshold=args.bull_return_threshold,
+        bear_return_threshold=args.bear_return_threshold,
         oos_start_date=args.oos_start_date,
         oos_fraction=args.oos_fraction,
         force=args.force,
@@ -263,7 +404,11 @@ def _run_alpha101(
             ROOT / "reports" / "alpha101_batch.py",
         ]
     )
-    data_sig = directory_signature(args.data, metadata_path)
+    data_sig = _data_signature_with_context(
+        args.data,
+        metadata_path,
+        args.context_file,
+    )
     if args.max_symbols:
         data_sig = f"{data_sig}:max-symbols={args.max_symbols}"
 
@@ -275,6 +420,7 @@ def _run_alpha101(
         data_signature=data_sig,
         implementation_signature=implementation_signature,
         factor_statuses=selected_statuses,
+        factor_categories=catalog.category_map(factors),
     ).run()
     print(f"batch status: {result.output_dir / 'batch_status.csv'}")
     print(f"leaderboard: {result.output_dir / 'leaderboard.csv'}")
@@ -301,10 +447,11 @@ def _run_gtja191(
     except (KeyError, ValueError, argparse.ArgumentTypeError) as exc:
         _argument_error(parser, str(exc))
     statuses = _gtja_factor_statuses(factor_config, factors)
+    categories = _gtja_factor_categories(factor_config, GTJA191_NAMES)
     if args.list_factor_status:
-        print("factor,status")
+        print("factor,status,category")
         for factor, status in statuses.items():
-            print(f"{factor},{status}")
+            print(f"{factor},{status},{categories[factor]}")
         return 0
     if not args.ignore_factor_config:
         factors = tuple(name for name in factors if statuses[name] in ("active", "watch"))
@@ -322,7 +469,8 @@ def _run_gtja191(
         raw_data = load_raw_data(args.data, symbols=selected_symbols)
     else:
         raw_data = load_raw_data(args.data)
-    metadata = pd.read_csv(args.metadata) if args.metadata and Path(args.metadata).exists() else None
+    raw_data = merge_context_with_raw_data(raw_data, _context_from_args(args))
+    metadata = _optional_metadata(args.metadata)
     panels = build_gtja191_panels(
         raw_data,
         metadata=metadata,
@@ -333,8 +481,27 @@ def _run_gtja191(
         windows=windows,
         groups=args.groups,
         top_n_counts=top_counts,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        winsorize=args.winsorize,
+        zscore=args.zscore,
         min_periods=args.min_periods,
         min_listing_days=args.min_listing_days,
+        liquidity_lookback_days=args.liquidity_lookback_days,
+        min_liquidity=args.min_liquidity,
+        commission_rate=args.commission_rate,
+        slippage_rate=args.slippage_rate,
+        stamp_tax_rate=args.stamp_tax_rate,
+        industry_col=args.industry_col,
+        market_cap_col=args.market_cap_col,
+        market_cap_groups=args.market_cap_groups,
+        market_regime_col=args.market_regime_col,
+        market_regime_lookback_days=args.market_regime_lookback_days,
+        market_regime_min_periods=args.market_regime_min_periods,
+        bull_return_threshold=args.bull_return_threshold,
+        bear_return_threshold=args.bear_return_threshold,
+        oos_start_date=args.oos_start_date,
+        oos_fraction=args.oos_fraction,
         force=args.force,
         fail_fast=args.fail_fast,
         show_progress=not args.no_progress,
@@ -349,13 +516,30 @@ def _run_gtja191(
             ROOT / "reports" / "gtja191_batch.py",
         ]
     )
+    metadata_path = Path(args.metadata) if args.metadata else None
+    data_sig = _data_signature_with_context(
+        args.data,
+        metadata_path,
+        args.context_file,
+    )
+    external_inputs = [
+        path
+        for path in (args.benchmark_file, args.style_factor_file)
+        if path
+    ]
+    if external_inputs:
+        data_sig = f"{data_sig}:gtja-external={files_signature(external_inputs)}"
+    if args.max_symbols:
+        data_sig = f"{data_sig}:max-symbols={args.max_symbols}"
     result = GTJA191BatchRunner(
         panels,
         factors=factors,
         output_dir=output,
         config=config,
+        data_signature=data_sig,
         implementation_signature=implementation_signature,
         factor_statuses={normalize_gtja_name(name): status for name, status in statuses.items()},
+        factor_categories=categories,
     ).run()
     counts = result.status["status"].value_counts().to_dict()
     print(f"GTJA191 batch report: {result.output_dir}")
@@ -365,11 +549,139 @@ def _run_gtja191(
     return 0
 
 
+def _run_external(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser | None = None,
+) -> int:
+    if not args.factor_file:
+        _argument_error(parser, "--factor-file is required with --family external")
+    requested = None
+    if not any(str(value).strip().lower() == "all" for value in args.factors):
+        requested = tuple(normalize_external_factor_name(value) for value in args.factors)
+    try:
+        external = load_external_factor_file(
+            args.factor_file,
+            factors=requested,
+            date_col=args.date_col,
+            symbol_col=args.symbol_col,
+            layout=args.factor_layout,
+            factor_name_col=args.factor_name_col,
+            factor_value_col=args.factor_value_col,
+        )
+        excluded = {normalize_external_factor_name(value) for value in args.exclude}
+        factors = tuple(factor for factor in external.factors if factor not in excluded)
+        statuses, categories = _external_catalog(args.factor_config, factors)
+        windows = _positive_windows(args.windows)
+        top_counts = _positive_windows(args.top_counts)
+    except (FileNotFoundError, KeyError, ValueError, argparse.ArgumentTypeError) as exc:
+        _argument_error(parser, str(exc))
+    if args.list_factors:
+        print("\n".join(external.factors))
+        return 0
+    if args.list_factor_status:
+        print("factor,status,category")
+        for factor in factors:
+            print(f"{factor},{statuses[factor]},{categories[factor]}")
+        return 0
+    if not args.ignore_factor_config:
+        factors = tuple(
+            factor for factor in factors if statuses[factor] in ("active", "watch")
+        )
+    if not factors:
+        _argument_error(parser, "external factor selection is empty after filtering")
+    if args.max_symbols is not None and args.max_symbols <= 0:
+        _argument_error(parser, "--max-symbols must be positive")
+
+    if args.max_symbols:
+        symbols = sorted(external.frame["symbol"].unique())[: args.max_symbols]
+        external = type(external)(
+            frame=external.frame.loc[external.frame["symbol"].isin(symbols)].copy(),
+            factors=external.factors,
+            source_path=external.source_path,
+            source_layout=external.source_layout,
+        )
+        raw_data = load_raw_data(args.data, symbols=symbols)
+    else:
+        raw_data = load_raw_data(args.data)
+    raw_data = merge_context_with_raw_data(raw_data, _context_from_args(args))
+    external_frame = external.frame
+    if args.start_date:
+        external_frame = external_frame.loc[
+            external_frame["date"] >= pd.Timestamp(args.start_date)
+        ]
+    if args.end_date:
+        external_frame = external_frame.loc[
+            external_frame["date"] <= pd.Timestamp(args.end_date)
+        ]
+    if external_frame.empty:
+        _argument_error(parser, "no external factor rows remain after date filtering")
+    if len(external_frame) != len(external.frame):
+        external = type(external)(
+            frame=external_frame.copy(),
+            factors=external.factors,
+            source_path=external.source_path,
+            source_layout=external.source_layout,
+        )
+    metadata_path = Path(args.metadata) if args.metadata else None
+    metadata = _optional_metadata(metadata_path)
+    output = args.output or "factor_report/external_batch"
+    tester_config = FactorTesterConfig(
+        industry_col=args.industry_col,
+        market_cap_col=args.market_cap_col,
+        groups=args.groups,
+        top_n_counts=top_counts,
+        forward_return_windows=windows,
+        winsorize=args.winsorize,
+        zscore=args.zscore,
+        min_periods=args.min_periods,
+        min_listing_days=args.min_listing_days,
+        liquidity_lookback_days=args.liquidity_lookback_days,
+        min_liquidity=args.min_liquidity,
+        commission_rate=args.commission_rate,
+        slippage_rate=args.slippage_rate,
+        stamp_tax_rate=args.stamp_tax_rate,
+        oos_start_date=args.oos_start_date,
+        oos_fraction=args.oos_fraction,
+        market_cap_groups=args.market_cap_groups,
+        market_regime_col=args.market_regime_col,
+        market_regime_lookback_days=args.market_regime_lookback_days,
+        market_regime_min_periods=args.market_regime_min_periods,
+        bull_return_threshold=args.bull_return_threshold,
+        bear_return_threshold=args.bear_return_threshold,
+    )
+    result = run_external_factor_batch(
+        external,
+        raw_data,
+        output_dir=output,
+        tester_config=tester_config,
+        metadata=metadata,
+        factors=factors,
+        factor_statuses=statuses,
+        factor_categories=categories,
+        fail_fast=args.fail_fast,
+        force=args.force,
+        data_signature=_data_signature_with_context(
+            args.data,
+            metadata_path,
+            args.context_file,
+        ),
+    )
+    print(f"external batch report: {result.output_dir}")
+    print(f"batch status: {result.output_dir / 'batch_status.csv'}")
+    print(f"leaderboard: {result.output_dir / 'leaderboard.csv'}")
+    if result.failed_factors:
+        print(f"failed factors: {', '.join(result.failed_factors)}")
+        return 1
+    return 0
+
+
 def run_from_args(
     args: argparse.Namespace,
     *,
     parser: argparse.ArgumentParser | None = None,
 ) -> int:
+    if args.family == "external":
+        return _run_external(args, parser)
     if args.family == "gtja191":
         return _run_gtja191(args, parser)
     return _run_alpha101(args, parser)

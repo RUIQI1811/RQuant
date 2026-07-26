@@ -32,6 +32,22 @@ class GTJA191BatchTest(unittest.TestCase):
         self.assertIn("--benchmark-file", result.stdout)
         self.assertIn("leaderboard.csv", result.stdout)
 
+    def test_gtja_config_preserves_cost_and_segment_settings(self):
+        config = GTJA191BatchConfig(
+            windows=(1,),
+            groups=5,
+            commission_rate=0.0012,
+            market_cap_groups=4,
+            market_regime_lookback_days=45,
+            market_regime_min_periods=15,
+        )
+
+        settings = config.result_settings()
+
+        self.assertEqual(settings["commission_rate"], 0.0012)
+        self.assertEqual(settings["market_cap_groups"], 4)
+        self.assertEqual(settings["market_regime_lookback_days"], 45)
+
     def test_parse_all_returns_ordered_191_names(self):
         self.assertEqual(parse_gtja_selection(("all",), ()), GTJA191_NAMES)
 
@@ -65,6 +81,8 @@ class GTJA191BatchTest(unittest.TestCase):
             self.assertEqual(statuses.loc["gtja_030"], "missing_input")
             self.assertTrue((Path(temp_dir) / "batch_status.csv").exists())
             self.assertTrue((Path(temp_dir) / "leaderboard.csv").exists())
+            self.assertTrue((Path(temp_dir) / "long_only_profitability.csv").exists())
+            self.assertTrue((Path(temp_dir) / "profitable_long_only.csv").exists())
 
     def test_leaderboard_collects_prior_completed_gtja_reports(self):
         panels = replace(_complete_panels(days=90), external=GTJA191ExternalData())

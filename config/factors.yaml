@@ -49,3 +49,39 @@ factors:
   alpha_050: watch
   alpha_052: watch
   alpha_055: watch
+
+categories:
+  alpha_001: price_behavior
+  alpha_004: price_behavior
+  alpha_009: price_behavior
+  alpha_010: price_behavior
+  alpha_018: price_behavior
+  alpha_020: price_behavior
+  alpha_023: price_behavior
+  alpha_024: price_behavior
+  alpha_033: price_behavior
+  alpha_034: price_behavior
+  alpha_053: price_behavior
+  alpha_060: price_behavior
+  alpha_101: price_behavior
+  alpha_002: price_volume
+  alpha_003: price_volume
+  alpha_006: price_volume
+  alpha_007: price_volume
+  alpha_011: price_volume
+  alpha_012: price_volume
+  alpha_013: price_volume
+  alpha_014: price_volume
+  alpha_015: price_volume
+  alpha_016: price_volume
+  alpha_022: price_volume
+  alpha_026: price_volume
+  alpha_027: price_volume
+  alpha_030: price_volume
+  alpha_035: price_volume
+  alpha_037: price_volume
+  alpha_040: price_volume
+  alpha_044: price_volume
+  alpha_050: price_volume
+  alpha_052: price_volume
+  alpha_055: price_volume

@@ -17,28 +17,43 @@ from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 from domain.artifacts import WorkflowResult
 from domain.research import ModelFitResult
+from domain.tabular import metadata_to_json
 
-from models.elasticnet import ElasticNetModel
+from models.elasticnet import (
+    DEFAULT_ELASTICNET_ALPHA,
+    DEFAULT_ELASTICNET_L1_RATIO,
+    ElasticNetModel,
+)
 from models.lightgbm_model import LightGBMModel
 from models.linear_ridge import RidgeModel
-from models.mlp_torch import TorchMLPModel
+from models.mlp_torch import DEFAULT_MLP_EPOCHS, TorchMLPModel
+from models.qlib_models import DoubleEnsembleModel
 from training.predict_score import scores_to_signals
-from training.validation import build_walk_forward_windows, validate_feature_label_frame
+from training.qlib_dataset import build_qlib_dataset, normalize_qlib_scores
+from training.validation import (
+    build_calendar_year_walk_forward_windows,
+    build_walk_forward_windows,
+    validate_feature_label_frame,
+)
 import training.predict_score as predict_score_module
 import training.validation as validation_module
 import models.elasticnet as elasticnet_module
 import models.lightgbm_model as lightgbm_module
 import models.linear_ridge as ridge_module
 import models.mlp_torch as mlp_module
+import models.qlib_models as qlib_models_module
+import training.qlib_dataset as qlib_dataset_module
 
 
 logger = logging.getLogger(__name__)
 
 
-MODEL_NAMES = ("ridge", "elasticnet", "lightgbm", "mlp")
+QLIB_MODEL_NAMES = ("lightgbm", "doubleensemble")
+MODEL_NAMES = ("ridge", "elasticnet", *QLIB_MODEL_NAMES, "mlp")
 
 
 @dataclass(frozen=True)
@@ -48,15 +63,20 @@ class WalkForwardTrainingConfig:
     model: str = "ridge"
     train_size: int = 504
     test_size: int = 21
+    window_mode: str = "trading_days"
+    train_years: int = 3
+    test_years: int = 1
     purge_days: int | None = None
     signal_top_n: int = 10
     ridge_alpha: float = 1.0
-    elasticnet_alpha: float = 0.1
-    elasticnet_l1_ratio: float = 0.5
+    elasticnet_alpha: float = DEFAULT_ELASTICNET_ALPHA
+    elasticnet_l1_ratio: float = DEFAULT_ELASTICNET_L1_RATIO
     lightgbm_estimators: int = 200
     lightgbm_n_jobs: int = 1
+    qlib_valid_ratio: float = 0.2
+    doubleensemble_num_models: int = 6
     mlp_hidden_sizes: tuple[int, ...] = (64, 32)
-    mlp_epochs: int = 100
+    mlp_epochs: int = DEFAULT_MLP_EPOCHS
     mlp_batch_size: int = 256
     mlp_learning_rate: float = 1e-3
     mlp_weight_decay: float = 0.0
@@ -87,6 +107,12 @@ class WalkForwardTrainingConfig:
         object.__setattr__(self, "model", model)
         if self.train_size <= 0 or self.test_size <= 0:
             raise ValueError("train_size and test_size must be positive")
+        window_mode = str(self.window_mode).strip().lower().replace("-", "_")
+        if window_mode not in {"trading_days", "calendar_years"}:
+            raise ValueError("window_mode must be trading_days or calendar_years")
+        object.__setattr__(self, "window_mode", window_mode)
+        if self.train_years <= 0 or self.test_years <= 0:
+            raise ValueError("train_years and test_years must be positive")
         inferred = infer_target_horizon(self.target_col)
         purge_days = self.purge_days
         if purge_days is None:
@@ -114,6 +140,10 @@ class WalkForwardTrainingConfig:
             raise ValueError("lightgbm_estimators must be positive")
         if self.lightgbm_n_jobs == 0:
             raise ValueError("lightgbm_n_jobs must be -1 or a non-zero worker count")
+        if not 0 < self.qlib_valid_ratio < 1:
+            raise ValueError("qlib_valid_ratio must be in (0, 1)")
+        if self.doubleensemble_num_models <= 0:
+            raise ValueError("doubleensemble_num_models must be positive")
         hidden = tuple(int(value) for value in self.mlp_hidden_sizes)
         if not hidden or any(value <= 0 for value in hidden):
             raise ValueError("mlp_hidden_sizes must contain positive integers")
@@ -161,14 +191,29 @@ def run_walk_forward_training(
         config.target_col,
     )
     frame, input_audit = _load_training_frame(features_file, labels_file, config)
-    windows = build_walk_forward_windows(
-        frame[config.date_col],
-        train_size=config.train_size,
-        test_size=config.test_size,
-        purge_size=int(config.purge_days),
-    )
+    if config.window_mode == "calendar_years":
+        windows = build_calendar_year_walk_forward_windows(
+            frame[config.date_col],
+            train_years=config.train_years,
+            test_years=config.test_years,
+            purge_size=int(config.purge_days),
+        )
+    else:
+        windows = build_walk_forward_windows(
+            frame[config.date_col],
+            train_size=config.train_size,
+            test_size=config.test_size,
+            purge_size=int(config.purge_days),
+        )
     if not windows:
         unique_dates = frame[config.date_col].nunique()
+        if config.window_mode == "calendar_years":
+            raise ValueError(
+                "not enough complete calendar years for one walk-forward window: "
+                f"available_years={frame[config.date_col].dt.year.nunique()}, "
+                f"required_train_years={config.train_years}, "
+                f"required_test_years={config.test_years}"
+            )
         required_dates = config.train_size + int(config.purge_days) + config.test_size
         raise ValueError(
             f"not enough trading dates for one walk-forward window: "
@@ -220,6 +265,9 @@ def run_walk_forward_training(
             model_artifact = json.loads(manifest_path.read_text(encoding="utf-8")).get(
                 "model_artifact"
             )
+            backend_audit = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            ).get("backend_audit", {})
             reused = True
         else:
             train = frame.loc[
@@ -231,8 +279,12 @@ def run_walk_forward_training(
             if train.empty or test.empty:
                 raise ValueError(f"window {window_id} has empty train or test rows")
             model = _build_model(config)
-            model.fit(train[list(config.feature_cols)], train[config.target_col])
-            scores = model.predict(test[list(config.feature_cols)])
+            scores, backend_audit = _fit_predict_window(
+                model,
+                train=train,
+                test=test,
+                config=config,
+            )
             predictions = test[
                 [config.date_col, config.symbol_col, config.target_col]
             ].copy()
@@ -265,6 +317,8 @@ def run_walk_forward_training(
                 {
                     "window_signature": window_signature,
                     "model_artifact": model_artifact,
+                    "model_backend": getattr(model, "backend", "native"),
+                    "backend_audit": backend_audit,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
@@ -285,6 +339,12 @@ def run_walk_forward_training(
             "prediction_count": len(predictions),
             "reused": reused,
             "model_artifact": model_artifact,
+            "model_backend": "qlib" if config.model in QLIB_MODEL_NAMES else "native",
+            "backend_audit": json.dumps(
+                backend_audit,
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         }
         window_rows.append(window_row)
         window_metric_rows.append({"window_id": window_id, **metrics})
@@ -320,10 +380,14 @@ def run_walk_forward_training(
     )
     summary = {
         "model": config.model,
+        "model_backend": "qlib" if config.model in QLIB_MODEL_NAMES else "native",
         "feature_cols": list(config.feature_cols),
         "target_col": config.target_col,
         "train_size": config.train_size,
         "test_size": config.test_size,
+        "window_mode": config.window_mode,
+        "train_years": config.train_years,
+        "test_years": config.test_years,
         "purge_days": int(config.purge_days),
         "window_count": len(windows),
         "reused_window_count": sum(bool(row["reused"]) for row in window_rows),
@@ -341,13 +405,10 @@ def run_walk_forward_training(
     metrics_path = destination / "metrics.csv"
     summary_path = destination / "summary.json"
     manifest_path = destination / "manifest.json"
-    signal_csv = signals.copy()
-    signal_csv["metadata"] = signal_csv["metadata"].map(
-        lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True)
-    )
+    signal_csv = metadata_to_json(signals)
     _atomic_write_csv(predictions_path, predictions)
     _atomic_write_csv(signals_path, signal_csv)
-    _atomic_write_json(signals_json_path, {"signals": signals.to_dict("records")})
+    _atomic_write_json(signals_json_path, {"signals": signals.to_dicts()})
     _atomic_write_csv(windows_path, pd.DataFrame(window_rows))
     _atomic_write_csv(metrics_path, pd.DataFrame(window_metric_rows))
     _atomic_write_json(summary_path, summary)
@@ -482,6 +543,13 @@ def _build_model(config: WalkForwardTrainingConfig):
             n_jobs=config.lightgbm_n_jobs,
             random_state=config.random_state,
         )
+    if config.model == "doubleensemble":
+        return DoubleEnsembleModel(
+            n_estimators=config.lightgbm_estimators,
+            n_jobs=config.lightgbm_n_jobs,
+            random_state=config.random_state,
+            num_models=config.doubleensemble_num_models,
+        )
     if config.model == "mlp":
         return TorchMLPModel(
             hidden_sizes=config.mlp_hidden_sizes,
@@ -494,6 +562,36 @@ def _build_model(config: WalkForwardTrainingConfig):
             device=config.device,
         )
     raise ValueError(f"unsupported model: {config.model}")
+
+
+def _fit_predict_window(
+    model: object,
+    *,
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    config: WalkForwardTrainingConfig,
+) -> tuple[pd.Series, dict[str, object]]:
+    if config.model in QLIB_MODEL_NAMES:
+        bundle = build_qlib_dataset(
+            train=train,
+            test=test,
+            feature_cols=config.feature_cols,
+            target_col=config.target_col,
+            date_col=config.date_col,
+            symbol_col=config.symbol_col,
+            valid_ratio=config.qlib_valid_ratio,
+        )
+        model.fit(bundle.dataset)
+        raw_scores = model.predict(bundle.dataset, segment="test")
+        scores = normalize_qlib_scores(
+            raw_scores,
+            expected_index=bundle.test_index,
+        )
+        return scores, bundle.audit()
+
+    model.fit(train[list(config.feature_cols)], train[config.target_col])
+    scores = model.predict(test[list(config.feature_cols)])
+    return pd.Series(scores, index=test.index, name="score"), {}
 
 
 def _prediction_metrics(
@@ -608,15 +706,20 @@ def _implementation_files() -> tuple[Path, ...]:
         elasticnet_module,
         lightgbm_module,
         mlp_module,
+        qlib_models_module,
+        qlib_dataset_module,
     )
     paths = [Path(__file__).resolve()]
     paths.extend(Path(module.__file__).resolve() for module in modules)
     return tuple(paths)
 
 
-def _atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:
+def _atomic_write_csv(path: Path, frame: pd.DataFrame | pl.DataFrame) -> None:
     temp = path.with_name(f".{path.name}.tmp")
-    frame.to_csv(temp, index=False)
+    if isinstance(frame, pl.DataFrame):
+        frame.write_csv(temp)
+    else:
+        frame.to_csv(temp, index=False)
     os.replace(temp, path)
 
 
@@ -647,6 +750,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--train-size", type=int, default=504, help="Training trading dates")
     parser.add_argument("--test-size", type=int, default=21, help="Test trading dates per window")
     parser.add_argument(
+        "--window-mode",
+        choices=("trading-days", "calendar-years"),
+        default="trading-days",
+        help="Use rolling trading-day windows or exact prior-years/next-years windows",
+    )
+    parser.add_argument("--train-years", type=int, default=3)
+    parser.add_argument("--test-years", type=int, default=1)
+    parser.add_argument(
         "--purge-days",
         type=int,
         default=None,
@@ -654,8 +765,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument("--signal-top-n", type=int, default=10)
     parser.add_argument("--ridge-alpha", type=float, default=1.0)
-    parser.add_argument("--elasticnet-alpha", type=float, default=0.1)
-    parser.add_argument("--elasticnet-l1-ratio", type=float, default=0.5)
+    parser.add_argument(
+        "--elasticnet-alpha",
+        type=float,
+        default=DEFAULT_ELASTICNET_ALPHA,
+    )
+    parser.add_argument(
+        "--elasticnet-l1-ratio",
+        type=float,
+        default=DEFAULT_ELASTICNET_L1_RATIO,
+    )
     parser.add_argument("--lightgbm-estimators", type=int, default=200)
     parser.add_argument(
         "--lightgbm-n-jobs",
@@ -663,8 +782,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default=1,
         help="LightGBM worker count; default 1 for deterministic local runs",
     )
+    parser.add_argument(
+        "--qlib-valid-ratio",
+        type=float,
+        default=0.2,
+        help="Chronological tail fraction of each training window used for Qlib validation",
+    )
+    parser.add_argument("--doubleensemble-num-models", type=int, default=6)
     parser.add_argument("--mlp-hidden-sizes", nargs="+", type=int, default=[64, 32])
-    parser.add_argument("--mlp-epochs", type=int, default=100)
+    parser.add_argument("--mlp-epochs", type=int, default=DEFAULT_MLP_EPOCHS)
     parser.add_argument("--mlp-batch-size", type=int, default=256)
     parser.add_argument("--mlp-learning-rate", type=float, default=1e-3)
     parser.add_argument("--mlp-weight-decay", type=float, default=0.0)
@@ -682,6 +808,9 @@ def config_from_args(args: argparse.Namespace) -> WalkForwardTrainingConfig:
         model=args.model,
         train_size=args.train_size,
         test_size=args.test_size,
+        window_mode=args.window_mode,
+        train_years=args.train_years,
+        test_years=args.test_years,
         purge_days=args.purge_days,
         signal_top_n=args.signal_top_n,
         ridge_alpha=args.ridge_alpha,
@@ -689,6 +818,8 @@ def config_from_args(args: argparse.Namespace) -> WalkForwardTrainingConfig:
         elasticnet_l1_ratio=args.elasticnet_l1_ratio,
         lightgbm_estimators=args.lightgbm_estimators,
         lightgbm_n_jobs=args.lightgbm_n_jobs,
+        qlib_valid_ratio=args.qlib_valid_ratio,
+        doubleensemble_num_models=args.doubleensemble_num_models,
         mlp_hidden_sizes=tuple(args.mlp_hidden_sizes),
         mlp_epochs=args.mlp_epochs,
         mlp_batch_size=args.mlp_batch_size,

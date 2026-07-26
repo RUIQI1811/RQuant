@@ -36,3 +36,27 @@ factors:
   gtja_144: watch
   gtja_168: watch
   gtja_184: watch
+
+categories:
+  gtja_012: price_behavior
+  gtja_015: price_behavior
+  gtja_034: traditional_technical
+  gtja_038: price_behavior
+  gtja_046: traditional_technical
+  gtja_065: traditional_technical
+  gtja_005: price_volume
+  gtja_007: price_volume
+  gtja_016: price_volume
+  gtja_032: price_volume
+  gtja_042: price_volume
+  gtja_048: price_volume
+  gtja_062: price_volume
+  gtja_083: price_volume
+  gtja_090: price_volume
+  gtja_099: price_volume
+  gtja_105: price_volume
+  gtja_136: price_volume
+  gtja_139: price_volume
+  gtja_144: price_volume
+  gtja_168: liquidity
+  gtja_184: price_behavior

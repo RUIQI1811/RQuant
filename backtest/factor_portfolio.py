@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import polars as pl
 
 from domain.artifacts import WorkflowResult
 from domain.execution import BacktestResult
@@ -68,7 +69,7 @@ def run_filter_rank_portfolio_backtest(
 
     raw_data = load_raw_data(data_dir, end_date=None)
     metadata_file = Path(metadata_path) if metadata_path else None
-    metadata = pd.read_csv(metadata_file) if metadata_file and metadata_file.exists() else None
+    metadata = _read_optional_metadata(metadata_file)
     panels = build_alpha101_panels(raw_data, metadata=metadata)
     selection_dates = panels.close.index
     if start_date:
@@ -178,7 +179,7 @@ def run_rank_ensemble_portfolio_backtest(
 
     raw_data = load_raw_data(data_dir, end_date=None)
     metadata_file = Path(metadata_path) if metadata_path else None
-    metadata = pd.read_csv(metadata_file) if metadata_file and metadata_file.exists() else None
+    metadata = _read_optional_metadata(metadata_file)
     panels = build_alpha101_panels(raw_data, metadata=metadata)
     selection_dates = panels.close.index
     if start_date:
@@ -259,3 +260,14 @@ def run_rank_ensemble_portfolio_backtest(
     outputs["signal_output_dir"] = signal_output_dir
     outputs["signal_result"] = signal_result
     return outputs
+
+
+def _read_optional_metadata(path: Path | None) -> pd.DataFrame | None:
+    """Read optional stock metadata with Polars and skip offline placeholders."""
+
+    if path is None or not path.exists():
+        return None
+    if getattr(path.stat(), "st_flags", 0) & 0x40000000:
+        return None
+    frame = pl.read_csv(path, schema_overrides={"symbol": pl.String, "code": pl.String})
+    return pd.DataFrame(frame.to_dict(as_series=False))

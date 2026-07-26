@@ -57,6 +57,8 @@ class UnifiedSignalPortfolioBacktestTest(unittest.TestCase):
                 initial_cash=200_000,
                 hold_days=2,
                 commission_wan=0.8,
+                stamp_tax_rate=0.0005,
+                transfer_fee_rate=0.00001,
                 max_positions=1,
                 lot_size=100,
             )
@@ -68,6 +70,8 @@ class UnifiedSignalPortfolioBacktestTest(unittest.TestCase):
         self.assertEqual(summary["signal_count"], 2)
         self.assertEqual(summary["signal_execution_timing"], "signal date + 1 trading day at open")
         self.assertEqual(summary["max_positions_per_cohort"], 1)
+        self.assertEqual(summary["stamp_tax_rate"], 0.0005)
+        self.assertEqual(summary["transfer_fee_rate"], 0.00001)
         self.assertGreater(len(trades), 0)
         self.assertEqual(Path(outputs["equity_curve_html_path"]).name, "equity_curve.html")
 

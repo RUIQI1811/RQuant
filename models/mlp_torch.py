@@ -9,6 +9,9 @@ import numpy as np
 import pandas as pd
 
 
+DEFAULT_MLP_EPOCHS = 10
+
+
 class TorchMLPModel:
     """Small standardized MLP with deterministic training and local persistence."""
 
@@ -17,7 +20,7 @@ class TorchMLPModel:
         *,
         hidden_sizes: Sequence[int] = (64, 32),
         learning_rate: float = 1e-3,
-        epochs: int = 100,
+        epochs: int = DEFAULT_MLP_EPOCHS,
         batch_size: int = 256,
         weight_decay: float = 0.0,
         dropout: float = 0.0,

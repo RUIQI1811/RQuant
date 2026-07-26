@@ -19,6 +19,7 @@ from factors.gtja191 import (  # noqa: E402
     build_gtja191_panels,
     count,
     highday,
+    gtja_factor_category,
     lowday,
     normalize_gtja_name,
     gtja191_to_long,
@@ -108,6 +109,16 @@ def _raw_symbol_frames(days: int = 40, symbols: int = 2) -> dict[str, pd.DataFra
 
 
 class GTJA191OperatorsTest(unittest.TestCase):
+    def test_all_factors_have_a_semantic_category(self):
+        categories = {name: gtja_factor_category(name) for name in GTJA191_NAMES}
+
+        self.assertNotIn("unclassified", categories.values())
+        self.assertEqual(categories["gtja_001"], "price_volume")
+        self.assertEqual(categories["gtja_028"], "traditional_technical")
+        self.assertEqual(categories["gtja_030"], "market_related")
+        self.assertEqual(categories["gtja_070"], "liquidity")
+        self.assertEqual(categories["gtja_184"], "price_behavior")
+
     def test_normalize_gtja_name_accepts_supported_aliases(self):
         self.assertEqual(normalize_gtja_name(1), "gtja_001")
         self.assertEqual(normalize_gtja_name("gtja1"), "gtja_001")
@@ -189,6 +200,7 @@ class GTJA191EconomicLifecycleTest(unittest.TestCase):
         self.assertNotIn("gtja_077", factors)
         self.assertNotIn("gtja_086", factors)
         self.assertNotIn("gtja_156", factors)
+        self.assertEqual(payload["categories"]["gtja_184"], "price_behavior")
 
 
 class GTJA191FirstEightyTest(unittest.TestCase):

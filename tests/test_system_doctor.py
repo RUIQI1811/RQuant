@@ -18,6 +18,10 @@ class SystemDoctorTest(unittest.TestCase):
             "-r requirements.txt\ntorch\n",
             encoding="utf-8",
         )
+        (root / "requirements-qlib.txt").write_text(
+            "pyqlib==0.9.7\n",
+            encoding="utf-8",
+        )
         (root / "config/fetch_kline.yaml").write_text(
             "start: '20260101'\nend: '20260102'\nstocklist: config/stocklist.csv\n"
             "out: data/raw\nworkers: 1\nmax_requests_per_minute: 180\n",
@@ -90,7 +94,10 @@ class SystemDoctorTest(unittest.TestCase):
             self.assertTrue(report["ok"])
             self.assertNotIn(secret_token, serialized)
             self.assertNotIn("another-secret", serialized)
-            self.assertEqual(persisted["output_path"], str(output))
+            self.assertEqual(
+                Path(persisted["output_path"]).resolve(),
+                output.resolve(),
+            )
             self.assertEqual(report["secrets"]["items"][0]["source"], ".env")
             self.assertEqual(report["market_data"]["date_max"], date.today().isoformat())
             self.assertEqual(report["market_data"]["data_age_days"], 0)
@@ -231,6 +238,21 @@ class SystemDoctorTest(unittest.TestCase):
         self.assertFalse(result["importable"])
         self.assertEqual(result["import_error"], "missing native library libomp.dylib")
         self.assertIn("import failed", result["message"])
+
+    def test_pyqlib_distribution_imports_qlib_module(self):
+        with (
+            patch.object(system_doctor.importlib.metadata, "version", return_value="0.9.7"),
+            patch.object(system_doctor.importlib, "import_module") as importer,
+        ):
+            result = system_doctor._check_distribution(
+                "pyqlib",
+                expected="0.9.7",
+                required=False,
+            )
+
+        importer.assert_called_once_with("qlib")
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["importable"])
 
     def test_windows_native_dependency_error_has_actionable_summary(self):
         with (

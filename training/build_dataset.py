@@ -10,23 +10,33 @@ import os
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from datetime import date as calendar_date
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
 from domain.artifacts import WorkflowResult
 from domain.research import MLDatasetResult
+from domain.tabular import atomic_write_csv, to_polars
 from domain.values import DateRange
 
 import factors.alpha101 as alpha101_module
 import factors.custom as custom_module
 import factors.gtja191 as gtja191_module
+import factors.external as external_module
 import labels.make_forward_return as labels_module
 from factors.alpha101 import Alpha101, build_alpha101_panels, normalize_alpha_name
 from factors.custom import CustomFactors, normalize_custom_factor_name
 from factors.gtja191 import GTJA191, build_gtja191_panels, normalize_gtja_name
+from factors.external import (
+    load_external_factor_file,
+    load_research_context_file,
+    merge_context_with_raw_data,
+    normalize_external_factor_name,
+)
 from labels.make_forward_return import make_forward_returns, make_next_open_returns
 from strategies.preselect import load_raw_data
 
@@ -74,7 +84,7 @@ class MLDatasetConfig:
         object.__setattr__(self, "feature_transform", feature_transform)
         object.__setattr__(self, "target_transform", target_transform)
         if self.start_date and self.end_date:
-            if pd.Timestamp(self.start_date) > pd.Timestamp(self.end_date):
+            if _parse_date(self.start_date) > _parse_date(self.end_date):
                 raise ValueError("start_date must not be after end_date")
 
 
@@ -83,9 +93,18 @@ def build_ml_dataset(
     data_dir: str | Path,
     output_dir: str | Path,
     config: MLDatasetConfig,
-    metadata_path: str | Path | None = "config/stocklist.csv",
+    metadata_path: str | Path | None = None,
     benchmark_file: str | Path | None = None,
     style_factor_file: str | Path | None = None,
+    factor_file: str | Path | None = None,
+    factor_layout: str = "auto",
+    factor_date_col: str = "date",
+    factor_symbol_col: str = "symbol",
+    factor_name_col: str = "factor",
+    factor_value_col: str = "factor_value",
+    context_file: str | Path | None = None,
+    context_date_col: str = "date",
+    context_symbol_col: str = "symbol",
 ) -> WorkflowResult[MLDatasetResult]:
     """Calculate one-day-lagged factor features plus point-in-time labels."""
 
@@ -94,15 +113,33 @@ def build_ml_dataset(
     raw_data = load_raw_data(str(data_dir), end_date=None)
     if not raw_data:
         raise ValueError("no raw market data found")
-    logger.info("Loaded raw market data for %d symbols", len(raw_data))
-    metadata_file = Path(metadata_path) if metadata_path else None
-    metadata = (
-        pd.read_csv(metadata_file)
-        if metadata_file is not None and metadata_file.exists()
+    context = (
+        load_research_context_file(
+            context_file,
+            date_col=context_date_col,
+            symbol_col=context_symbol_col,
+        )
+        if context_file
         else None
     )
+    raw_data = merge_context_with_raw_data(raw_data, context)
+    logger.info("Loaded raw market data for %d symbols", len(raw_data))
+    metadata_file = Path(metadata_path) if metadata_path else None
+    metadata = _optional_metadata(metadata_file)
     benchmark = _optional_csv(benchmark_file)
     style_factors = _optional_csv(style_factor_file)
+    external = (
+        load_external_factor_file(
+            factor_file,
+            date_col=factor_date_col,
+            symbol_col=factor_symbol_col,
+            layout=factor_layout,
+            factor_name_col=factor_name_col,
+            factor_value_col=factor_value_col,
+        )
+        if factor_file
+        else None
+    )
     base_panels = build_alpha101_panels(raw_data, metadata=metadata)
     alpha_calculator = Alpha101(base_panels)
     custom_calculator = CustomFactors(base_panels)
@@ -115,15 +152,23 @@ def build_ml_dataset(
         len(dates),
         len(symbols),
     )
-    index = pd.MultiIndex.from_product([dates, symbols], names=["date", "symbol"])
-    features = pd.DataFrame(index=index)
+    features = _panel_to_long(base_panels.close, "_base").select("date", "symbol")
+    factor_sources: dict[str, str] = {}
     for position, factor in enumerate(config.factors, start=1):
         factor_started = time.perf_counter()
         logger.info("[%d/%d] Calculating factor %s", position, len(config.factors), factor)
-        if factor.startswith("alpha_"):
+        if external is not None and factor in external.factors:
+            values = (
+                external.frame.pivot(index="date", columns="symbol", values=factor)
+                .reindex(index=dates, columns=symbols)
+            )
+            factor_sources[factor] = "external"
+        elif factor.startswith("alpha_"):
             values = alpha_calculator.calculate(factor)
+            factor_sources[factor] = "alpha101"
         elif factor.startswith("custom_"):
             values = custom_calculator.calculate(factor)
+            factor_sources[factor] = "custom"
         elif factor.startswith("gtja_"):
             if gtja_calculator is None:
                 gtja_panels = build_gtja191_panels(
@@ -134,13 +179,20 @@ def build_ml_dataset(
                 )
                 gtja_calculator = GTJA191(gtja_panels)
             values = gtja_calculator.calculate(factor)
+            factor_sources[factor] = "gtja191"
         else:
-            raise ValueError(f"unsupported factor family: {factor}")
+            raise ValueError(
+                f"unsupported factor family or missing external factor column: {factor}"
+            )
         lagged = (
             values.reindex(index=dates, columns=symbols)
             .shift(config.factor_lag_days)
         )
-        features[factor] = _to_long(lagged, factor).reindex(index)
+        features = features.join(
+            _panel_to_long(lagged, factor),
+            on=["date", "symbol"],
+            how="left",
+        )
         logger.info(
             "[%d/%d] Factor %s complete in %.2fs",
             position,
@@ -149,8 +201,9 @@ def build_ml_dataset(
             time.perf_counter() - factor_started,
         )
 
-    feature_frame = features.reset_index()
-    feature_frame["symbol"] = feature_frame["symbol"].astype(str).str.zfill(6)
+    feature_frame = features.with_columns(
+        pl.col("symbol").cast(pl.String).str.pad_start(6, "0")
+    )
     if config.feature_transform != "raw":
         feature_frame = _cross_sectional_transform(
             feature_frame,
@@ -158,50 +211,52 @@ def build_ml_dataset(
             transform=config.feature_transform,
         )
     if config.label_mode == "next_open":
-        price_frame = _to_long(base_panels.open, "open").dropna().reset_index()
-        price_frame["symbol"] = price_frame["symbol"].astype(str).str.zfill(6)
+        price_frame = _panel_to_long(base_panels.open, "open").drop_nulls("open")
         label_frame = make_next_open_returns(price_frame, windows=config.target_windows)
         label_columns = [f"next_open_return_{window}d" for window in config.target_windows]
     else:
-        price_frame = _to_long(base_panels.close, "close").dropna().reset_index()
-        price_frame["symbol"] = price_frame["symbol"].astype(str).str.zfill(6)
+        price_frame = _panel_to_long(base_panels.close, "close").drop_nulls("close")
         label_frame = make_forward_returns(price_frame, windows=config.target_windows)
         label_columns = [f"forward_return_{window}d" for window in config.target_windows]
 
     transformed_label_columns: list[str] = []
     if config.target_transform != "raw":
         transformed = _cross_sectional_transform(
-            label_frame[["date", "symbol", *label_columns]],
+            label_frame.select("date", "symbol", *label_columns),
             columns=label_columns,
             transform=config.target_transform,
         )
         suffix = f"cs_{config.target_transform}"
         for column in label_columns:
             transformed_column = f"{column}_{suffix}"
-            label_frame[transformed_column] = transformed[column]
+            label_frame = label_frame.with_columns(
+                transformed[column].alias(transformed_column)
+            )
             transformed_label_columns.append(transformed_column)
 
     feature_frame = _filter_dates(feature_frame, config)
     label_frame = _filter_dates(label_frame, config)
-    feature_frame["date"] = pd.to_datetime(feature_frame["date"]).dt.strftime("%Y-%m-%d")
-    label_frame["date"] = pd.to_datetime(label_frame["date"]).dt.strftime("%Y-%m-%d")
-    feature_frame = feature_frame.sort_values(["date", "symbol"], kind="mergesort")
-    label_frame = label_frame.sort_values(["date", "symbol"], kind="mergesort")
+    feature_frame = feature_frame.with_columns(
+        pl.col("date").cast(pl.Date).dt.strftime("%Y-%m-%d")
+    ).sort(["date", "symbol"], maintain_order=True)
+    label_frame = label_frame.with_columns(
+        pl.col("date").cast(pl.Date).dt.strftime("%Y-%m-%d")
+    ).sort(["date", "symbol"], maintain_order=True)
 
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
     features_path = destination / "features.csv"
     labels_path = destination / "labels.csv"
     manifest_path = destination / "manifest.json"
-    _atomic_write_csv(features_path, feature_frame)
-    _atomic_write_csv(labels_path, label_frame)
+    atomic_write_csv(features_path, feature_frame)
+    atomic_write_csv(labels_path, label_frame)
     factor_missing = {
-        factor: int(feature_frame[factor].isna().sum())
+        factor: int(feature_frame[factor].null_count() + feature_frame[factor].is_nan().sum())
         for factor in config.factors
     }
     all_label_columns = [*label_columns, *transformed_label_columns]
     label_missing = {
-        column: int(label_frame[column].isna().sum())
+        column: int(label_frame[column].null_count() + label_frame[column].is_nan().sum())
         for column in all_label_columns
     }
     manifest = {
@@ -211,12 +266,19 @@ def build_ml_dataset(
             "metadata": str(metadata_file.resolve()) if metadata_file and metadata_file.exists() else None,
             "benchmark_file": str(Path(benchmark_file).resolve()) if benchmark_file else None,
             "style_factor_file": str(Path(style_factor_file).resolve()) if style_factor_file else None,
+            "external_factor_file": str(external.source_path) if external else None,
+            "external_factor_layout": external.source_layout if external else None,
+            "research_context_file": (
+                str(Path(context_file).resolve()) if context_file else None
+            ),
         },
         "data_signature": _data_signature(
             Path(data_dir),
             metadata_file,
             Path(benchmark_file) if benchmark_file else None,
             Path(style_factor_file) if style_factor_file else None,
+            Path(factor_file) if factor_file else None,
+            Path(context_file) if context_file else None,
         ),
         "implementation_sha256": {
             path.name: _file_sha256(path)
@@ -230,9 +292,10 @@ def build_ml_dataset(
             "raw": label_columns,
             "fitted": transformed_label_columns or label_columns,
         },
+        "factor_sources": factor_sources,
         "date_range": {
-            "start": feature_frame["date"].min() if not feature_frame.empty else None,
-            "end": feature_frame["date"].max() if not feature_frame.empty else None,
+            "start": feature_frame["date"].min() if not feature_frame.is_empty() else None,
+            "end": feature_frame["date"].max() if not feature_frame.is_empty() else None,
         },
         "outputs": {"features": features_path.name, "labels": labels_path.name},
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -251,8 +314,8 @@ def build_ml_dataset(
         feature_rows=len(feature_frame),
         label_rows=len(label_frame),
         date_range=DateRange(
-            feature_frame["date"].min() if not feature_frame.empty else None,
-            feature_frame["date"].max() if not feature_frame.empty else None,
+            feature_frame["date"].min() if not feature_frame.is_empty() else None,
+            feature_frame["date"].max() if not feature_frame.is_empty() else None,
         ),
         factor_missing_rows=factor_missing,
         label_missing_rows=label_missing,
@@ -268,47 +331,56 @@ def build_ml_dataset(
 
 
 def _normalize_factor_name(value: object) -> str:
-    name = str(value).strip().lower().replace("-", "_")
+    raw_name = str(value).strip()
+    name = raw_name.lower().replace("-", "_")
     if name.startswith("alpha") or name.isdigit():
         return normalize_alpha_name(name)
     if name.startswith("custom"):
         return normalize_custom_factor_name(name)
     if name.startswith("gtja"):
         return normalize_gtja_name(name)
-    raise ValueError(f"unsupported factor name: {value}")
+    return normalize_external_factor_name(raw_name)
 
 
-def _filter_dates(frame: pd.DataFrame, config: MLDatasetConfig) -> pd.DataFrame:
-    dates = pd.to_datetime(frame["date"])
-    selected = pd.Series(True, index=frame.index)
+def _filter_dates(frame: pl.DataFrame, config: MLDatasetConfig) -> pl.DataFrame:
+    result = frame.with_columns(
+        pl.col("date")
+        .cast(pl.String)
+        .str.slice(0, 10)
+        .str.to_date("%Y-%m-%d", strict=False)
+    )
     if config.start_date:
-        selected &= dates >= pd.Timestamp(config.start_date)
+        result = result.filter(pl.col("date") >= pl.lit(config.start_date).str.to_date())
     if config.end_date:
-        selected &= dates <= pd.Timestamp(config.end_date)
-    return frame.loc[selected].copy()
+        result = result.filter(pl.col("date") <= pl.lit(config.end_date).str.to_date())
+    return result
 
 
 def _cross_sectional_transform(
-    frame: pd.DataFrame,
+    frame: pl.DataFrame,
     *,
     columns: tuple[str, ...] | list[str],
     transform: str,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Transform values within each date without using any future date."""
 
-    result = frame.copy()
+    result = frame.clone()
     for column in columns:
-        numeric = pd.to_numeric(result[column], errors="coerce")
+        numeric = pl.col(column).cast(pl.Float64, strict=False)
         if transform == "rank":
-            result[column] = numeric.groupby(result["date"], sort=False).rank(
-                method="average",
-                pct=True,
+            count = numeric.count().over("date")
+            result = result.with_columns(
+                (numeric.rank(method="average").over("date") / count).alias(column)
             )
         elif transform == "zscore":
-            grouped = numeric.groupby(result["date"], sort=False)
-            mean = grouped.transform("mean")
-            scale = grouped.transform("std")
-            result[column] = ((numeric - mean) / scale).where(scale.gt(1e-12), 0.0)
+            mean = numeric.mean().over("date")
+            scale = numeric.std().over("date")
+            result = result.with_columns(
+                pl.when(scale > 1e-12)
+                .then((numeric - mean) / scale)
+                .otherwise(0.0)
+                .alias(column)
+            )
         else:
             raise ValueError(f"unsupported cross-sectional transform: {transform}")
     return result
@@ -320,11 +392,45 @@ def _optional_csv(path: str | Path | None) -> pd.DataFrame | None:
     resolved = Path(path)
     if not resolved.exists():
         raise FileNotFoundError(f"optional input file not found: {resolved}")
-    return pd.read_csv(resolved)
+    return pd.DataFrame(pl.read_csv(resolved).to_dict(as_series=False))
 
 
-def _to_long(panel: pd.DataFrame, name: str) -> pd.Series:
-    return panel.rename_axis(index="date", columns="symbol").stack(future_stack=True).rename(name)
+def _optional_metadata(path: Path | None) -> pd.DataFrame | None:
+    if path is None or not path.exists():
+        return None
+    if _is_macos_dataless(path):
+        logger.warning(
+            "Optional metadata is a macOS dataless placeholder and will be skipped: %s",
+            path,
+        )
+        return None
+    try:
+        frame = pl.read_csv(path, schema_overrides={"symbol": pl.String, "code": pl.String})
+    except OSError as exc:
+        logger.warning("Optional metadata could not be read and will be skipped: %s (%s)", path, exc)
+        return None
+    return pd.DataFrame(frame.to_dict(as_series=False))
+
+
+def _is_macos_dataless(path: Path) -> bool:
+    # APFS FileProvider placeholders expose SF_DATALESS (0x40000000) in st_flags.
+    return bool(getattr(path.stat(), "st_flags", 0) & 0x40000000)
+
+
+def _panel_to_long(panel: pd.DataFrame, name: str) -> pl.DataFrame:
+    """Convert the legacy wide factor-math boundary into a Polars long table."""
+
+    data: dict[str, object] = {
+        "date": pd.to_datetime(panel.index).strftime("%Y-%m-%d").tolist()
+    }
+    for symbol in panel.columns:
+        data[str(symbol).zfill(6)] = panel[symbol].to_numpy()
+    return (
+        to_polars(data)
+        .unpivot(index="date", variable_name="symbol", value_name=name)
+        .with_columns(pl.col("date").str.to_date("%Y-%m-%d", strict=False))
+        .sort(["date", "symbol"], maintain_order=True)
+    )
 
 
 def _data_signature(data_dir: Path, *extra_files: Path | None) -> str:
@@ -332,11 +438,23 @@ def _data_signature(data_dir: Path, *extra_files: Path | None) -> str:
     files = sorted(data_dir.glob("*.csv"))
     if not files:
         raise ValueError(f"no CSV files found in {data_dir}")
-    for path in [*files, *(value for value in extra_files if value is not None and value.exists())]:
+    extras: list[Path] = []
+    for value in extra_files:
+        if value is None or not value.exists():
+            continue
+        if value.is_dir():
+            extras.extend(sorted(value.rglob("*.csv")))
+            manifest = value / "_context_manifest.json"
+            if manifest.exists():
+                extras.append(manifest)
+        else:
+            extras.append(value)
+    for path in [*files, *extras]:
         stat = path.stat()
         digest.update(str(path.resolve()).encode("utf-8"))
         digest.update(str(stat.st_size).encode("ascii"))
         digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        digest.update(str(getattr(stat, "st_flags", 0)).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -346,6 +464,7 @@ def _implementation_files() -> tuple[Path, ...]:
         Path(alpha101_module.__file__).resolve(),
         Path(custom_module.__file__).resolve(),
         Path(gtja191_module.__file__).resolve(),
+        Path(external_module.__file__).resolve(),
         Path(labels_module.__file__).resolve(),
     )
 
@@ -356,12 +475,6 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:
-    temp = path.with_name(f".{path.name}.tmp")
-    frame.to_csv(temp, index=False)
-    os.replace(temp, path)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -381,11 +494,36 @@ def _json_default(value: object) -> object:
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
 
 
+def _parse_date(value: object) -> calendar_date:
+    return calendar_date.fromisoformat(str(value)[:10])
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--data", default="data/raw")
     parser.add_argument("--metadata", default="config/stocklist.csv")
     parser.add_argument("--benchmark-file", default=None)
     parser.add_argument("--style-factor-file", default=None)
+    parser.add_argument(
+        "--factor-file",
+        default=None,
+        help="Optional external wide/long factor CSV; selected columns may be mixed with built-ins",
+    )
+    parser.add_argument(
+        "--factor-layout",
+        choices=("auto", "wide", "long"),
+        default="auto",
+    )
+    parser.add_argument("--factor-date-col", default="date")
+    parser.add_argument("--factor-symbol-col", default="symbol")
+    parser.add_argument("--factor-name-col", default="factor")
+    parser.add_argument("--factor-value-col", default="factor_value")
+    parser.add_argument(
+        "--context-file",
+        default=None,
+        help="Optional point-in-time date,symbol market-cap/classification/regime CSV",
+    )
+    parser.add_argument("--context-date-col", default="date")
+    parser.add_argument("--context-symbol-col", default="symbol")
     parser.add_argument("--factors", nargs="+", required=True)
     parser.add_argument("--target-windows", nargs="+", type=int, default=[20])
     parser.add_argument("--factor-lag-days", type=int, choices=(1,), default=1)
@@ -433,6 +571,15 @@ def run_from_args(args: argparse.Namespace) -> WorkflowResult[MLDatasetResult]:
         metadata_path=args.metadata,
         benchmark_file=args.benchmark_file,
         style_factor_file=args.style_factor_file,
+        factor_file=args.factor_file,
+        factor_layout=args.factor_layout,
+        factor_date_col=args.factor_date_col,
+        factor_symbol_col=args.factor_symbol_col,
+        factor_name_col=args.factor_name_col,
+        factor_value_col=args.factor_value_col,
+        context_file=args.context_file,
+        context_date_col=args.context_date_col,
+        context_symbol_col=args.context_symbol_col,
     )
 
 

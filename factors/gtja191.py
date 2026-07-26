@@ -40,6 +40,32 @@ from factors.operators import (
 
 Panel = pd.DataFrame
 GTJA191_NAMES = tuple(f"gtja_{number:03d}" for number in range(1, 192))
+GTJA191_MARKET_RELATED_FACTORS = frozenset(
+    f"gtja_{number:03d}" for number in (30, 75, 149, 181, 182)
+)
+GTJA191_LIQUIDITY_FACTORS = frozenset(
+    f"gtja_{number:03d}"
+    for number in (70, 80, 81, 95, 97, 100, 102, 132, 145, 155, 168)
+)
+GTJA191_TRADITIONAL_TECHNICAL_FACTORS = frozenset(
+    f"gtja_{number:03d}"
+    for number in (
+        23, 24, 27, 28, 34, 46, 47, 63, 65, 67, 69, 72, 78, 79, 82,
+        89, 96, 137, 159, 161, 162, 172, 173, 175, 177, 183, 186,
+        187, 188, 189,
+    )
+)
+GTJA191_PRICE_VOLUME_FACTORS = frozenset(
+    f"gtja_{number:03d}"
+    for number in (
+        1, 4, 5, 7, 9, 11, 16, 25, 29, 32, 33, 35, 36, 39, 40, 42,
+        44, 45, 48, 56, 60, 61, 62, 64, 68, 73, 74, 76, 77, 83, 84,
+        85, 90, 91, 92, 94, 99, 101, 104, 105, 108, 111, 113, 114,
+        115, 117, 119, 121, 123, 125, 128, 130, 131, 134, 136, 138,
+        139, 140, 141, 142, 144, 148, 150, 154, 163, 170, 176, 178,
+        179, 180, 191,
+    )
+)
 GTJA191_FORMULA_NOTES: dict[str, str] = {
     "gtja_028": "Use TSMAX(HIGH,9)-TSMIN(LOW,9) in both stochastic terms.",
     "gtja_030": "Map MKT/SMB/HML to explicit external daily factor returns.",
@@ -89,6 +115,7 @@ class GTJA191Panels:
     market_cap: Panel | None = None
     is_st: Panel | None = None
     industry: Panel | None = None
+    market_regime: Panel | None = None
 
     @property
     def turnover_value(self) -> Panel:
@@ -119,6 +146,26 @@ def normalize_gtja_name(name: str | int) -> str:
     if not 1 <= number <= 191:
         raise KeyError(f"GTJA191 factor number must be in [1, 191], got {number}")
     return f"gtja_{number:03d}"
+
+
+def gtja_factor_category(name: str | int) -> str:
+    """Classify every GTJA191 formula by its dominant economic input family.
+
+    Lifecycle status is intentionally independent: a disabled formula still
+    receives a research category, but classification does not make it active.
+    Explicit configuration may override this deterministic fallback.
+    """
+
+    normalized = normalize_gtja_name(name)
+    if normalized in GTJA191_MARKET_RELATED_FACTORS:
+        return "market_related"
+    if normalized in GTJA191_TRADITIONAL_TECHNICAL_FACTORS:
+        return "traditional_technical"
+    if normalized in GTJA191_LIQUIDITY_FACTORS:
+        return "liquidity"
+    if normalized in GTJA191_PRICE_VOLUME_FACTORS:
+        return "price_volume"
+    return "price_behavior"
 
 
 def sma_cn(value: Panel, periods: int | float, weight: int | float) -> Panel:
@@ -1367,6 +1414,7 @@ def build_gtja191_panels(
         market_cap=base.cap,
         is_st=base.is_st,
         industry=base.industry,
+        market_regime=base.market_regime,
     )
 
 
@@ -1405,6 +1453,8 @@ def gtja191_to_long(
         parts.append(stacked(panels.market_cap, "market_cap"))
     if panels.is_st is not None:
         parts.append(stacked(panels.is_st, "is_st"))
+    if panels.market_regime is not None:
+        parts.append(stacked(panels.market_regime, "market_regime"))
     result = pd.concat(parts, axis=1).reset_index()
     result["symbol"] = result["symbol"].astype(str).str.zfill(6)
     return result

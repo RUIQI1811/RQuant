@@ -1,0 +1,71 @@
+version: 1
+
+# 选择一个因子库：alpha101、gtja191 或 external。
+# external 还需填写 factor_file，并提供含 categories 映射的 factor_config。
+factor_library:
+  family: alpha101
+  data: data/raw
+  metadata: config/stocklist.csv
+  factor_config: config/factors.yaml
+  factors: [all]
+  exclude: []
+  ignore_factor_config: false
+  context_file: data/context/daily_basic
+  context_date_col: date
+  context_symbol_col: symbol
+  industry_col: industry
+  market_cap_col: market_cap
+
+evaluation:
+  windows: [1, 5, 10, 20]
+  groups: 10
+  top_counts: [1, 5, 10, 20, 50, 100]
+  start_date: null
+  end_date: null
+  min_periods: 3
+  min_listing_days: 60
+  liquidity_lookback_days: 20
+  min_liquidity: 0.0
+  commission_rate: 0.0003
+  slippage_rate: 0.0005
+  stamp_tax_rate: 0.0005
+  market_cap_groups: 3
+  market_regime_col: market_regime
+  market_regime_lookback_days: 60
+  market_regime_min_periods: 20
+  bull_return_threshold: 0.10
+  bear_return_threshold: -0.10
+  oos_fraction: 0.30
+  fail_fast: true
+
+correlation:
+  factor_lag_days: 1
+  min_observations: 20
+  min_dates: 20
+  high_correlation_threshold: 0.80
+  priority_score_col: preferred_net_sharpe
+  priority_window: 20
+  eligibility_col: preferred_profitable_after_cost
+
+machine_learning:
+  enabled: true
+  models: [ridge, elasticnet]
+  target_window: 20
+  label_mode: next_open
+  feature_transform: rank
+  target_transform: rank
+  window_mode: calendar-years
+  train_years: 3
+  test_years: 1
+  signal_top_n: 10
+  run_backtests: true
+  backtest_initial_cash: 10000000
+  backtest_commission_wan: 0.8
+  backtest_stamp_tax_rate: 0.0005
+  backtest_transfer_fee_rate: 0.00001
+  backtest_lot_size: 100
+
+execution:
+  output: factor_report/factor_run_all/alpha101
+  force: false
+  require_classification: true

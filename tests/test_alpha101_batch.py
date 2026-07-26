@@ -134,6 +134,18 @@ class FactorSelectionTest(unittest.TestCase):
                 "default_status: disabled\n"
                 "factors:\n"
                 "  alpha_001:\n"
+                "    status: watch\n"
+                "    category: price_behavior\n",
+                encoding="utf-8",
+            )
+            catalog = load_factor_catalog(path)
+            self.assertEqual(catalog.category_for("alpha_001"), "price_behavior")
+            self.assertEqual(catalog.category_for("alpha_002"), "unclassified")
+
+            path.write_text(
+                "default_status: disabled\n"
+                "factors:\n"
+                "  alpha_001:\n"
                 "    note: missing lifecycle status\n",
                 encoding="utf-8",
             )
@@ -179,6 +191,27 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
         visible = Alpha101BatchConfig(windows=(1,), groups=5, show_progress=True)
 
         self.assertEqual(hidden.result_settings(), visible.result_settings())
+
+    def test_segment_and_cost_settings_are_part_of_resume_fingerprint(self):
+        config = Alpha101BatchConfig(
+            windows=(1,),
+            groups=5,
+            commission_rate=0.001,
+            market_cap_groups=4,
+            market_regime_lookback_days=40,
+            market_regime_min_periods=15,
+            bull_return_threshold=0.08,
+            bear_return_threshold=-0.06,
+        )
+
+        settings = config.result_settings()
+
+        self.assertEqual(settings["commission_rate"], 0.001)
+        self.assertEqual(settings["market_cap_groups"], 4)
+        self.assertEqual(settings["market_regime_lookback_days"], 40)
+        self.assertEqual(settings["market_regime_min_periods"], 15)
+        self.assertEqual(settings["bull_return_threshold"], 0.08)
+        self.assertEqual(settings["bear_return_threshold"], -0.06)
 
     def test_show_progress_wraps_factor_loop_and_reports_current_factor(self):
         class FakeProgress:
@@ -281,6 +314,8 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             self.assertIn("top_10_mean_return", result.leaderboard.columns)
             self.assertIn("tradable_top_quantile_sharpe", result.leaderboard.columns)
             self.assertIn("tradable_top_1_sharpe", result.leaderboard.columns)
+            self.assertTrue((Path(temp_dir) / "long_only_profitability.csv").exists())
+            self.assertTrue((Path(temp_dir) / "profitable_long_only.csv").exists())
             samples = pd.read_csv(report_dir / "sample_performance.csv")
             self.assertEqual(set(samples["sample"]), {"in_sample", "out_of_sample"})
             self.assertIn("tradable_top_quantile_period_return", samples.columns)
@@ -322,6 +357,54 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
                 fingerprint="different-fingerprint",
             )
             self.assertTrue(leaderboard.empty)
+
+    def test_leaderboard_uses_ic_preferred_side_for_quality_score(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            factor_dir = Path(temp_dir) / "negative_factor"
+            factor_dir.mkdir()
+            pd.DataFrame(
+                [
+                    {
+                        "window": 5,
+                        "ic_mean": -0.1,
+                        "ic_std": 0.2,
+                        "icir": -0.5,
+                        "ic_win_rate": 0.4,
+                        "rank_ic_mean": -0.2,
+                        "rank_ic_std": 0.25,
+                        "rank_icir": -0.8,
+                        "rank_ic_win_rate": 0.3,
+                        "count": 100,
+                    }
+                ]
+            ).to_csv(factor_dir / "ic_summary.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "window": 5,
+                        "preferred_long_side": "low_factor",
+                        "high_gross_annualized_return": -0.10,
+                        "high_gross_sharpe": -0.5,
+                        "high_net_annualized_return": -0.12,
+                        "high_net_sharpe": -0.7,
+                        "high_profitable_before_cost": False,
+                        "high_profitable_after_cost": False,
+                        "low_gross_annualized_return": 0.20,
+                        "low_gross_sharpe": 1.2,
+                        "low_net_annualized_return": 0.16,
+                        "low_net_sharpe": 0.9,
+                        "low_profitable_before_cost": True,
+                        "low_profitable_after_cost": True,
+                    }
+                ]
+            ).to_csv(factor_dir / "horizon_effectiveness.csv", index=False)
+
+            row = build_leaderboard(temp_dir, ("negative_factor",)).iloc[0]
+
+            self.assertEqual(row["preferred_long_side"], "low_factor")
+            self.assertEqual(row["preferred_net_sharpe"], 0.9)
+            self.assertEqual(row["preferred_net_annualized_return"], 0.16)
+            self.assertTrue(row["preferred_profitable_after_cost"])
 
     def test_watch_factors_are_ranked_after_active_factors(self):
         with tempfile.TemporaryDirectory() as temp_dir:

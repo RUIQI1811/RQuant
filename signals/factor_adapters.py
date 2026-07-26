@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
-import pandas as pd
+import polars as pl
 
 from domain.signals import SignalBook
+from domain.tabular import to_polars
 from signals.schema import Signal, frame_to_signals, signals_to_frame
 
 
@@ -24,16 +25,17 @@ class FactorSignalConfig:
 
 
 def factor_frame_to_signal_frame(
-    factor_data: pd.DataFrame,
+    factor_data: Any,
     *,
     config: FactorSignalConfig,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Convert long-format factor values into unified buy signals.
 
     Higher factor values are selected by default. Set ascending=True when lower
     values are better. Use either top_n or top_quantile; top_n takes precedence.
     """
-    if factor_data is None or factor_data.empty:
+    df = to_polars(factor_data)
+    if df.is_empty():
         return signals_to_frame([])
     required = [config.date_col, config.symbol_col, config.factor_col]
     missing = [col for col in required if col not in factor_data.columns]
@@ -44,25 +46,36 @@ def factor_frame_to_signal_frame(
     if config.top_quantile is not None and not (0 < config.top_quantile <= 1):
         raise ValueError("top_quantile must be in (0, 1]")
 
-    df = factor_data.copy()
-    df[config.date_col] = pd.to_datetime(df[config.date_col])
-    df[config.symbol_col] = df[config.symbol_col].astype(str).str.zfill(6)
-    df[config.factor_col] = pd.to_numeric(df[config.factor_col], errors="coerce")
-    df = df.dropna(subset=[config.factor_col])
+    df = (
+        df.with_columns(
+            pl.col(config.date_col)
+            .cast(pl.String)
+            .str.slice(0, 10)
+            .str.to_date("%Y-%m-%d", strict=False),
+            pl.col(config.symbol_col).cast(pl.String).str.pad_start(6, "0"),
+            pl.col(config.factor_col).cast(pl.Float64, strict=False),
+        )
+        .drop_nulls([config.date_col, config.factor_col])
+        .sort(
+            [config.date_col, config.factor_col, config.symbol_col],
+            descending=[False, not config.ascending, False],
+            maintain_order=True,
+        )
+    )
 
     signals: list[Signal] = []
-    for date, daily in df.groupby(config.date_col):
-        ranked = daily.sort_values(config.factor_col, ascending=config.ascending)
+    for daily in df.partition_by(config.date_col, maintain_order=True):
+        date = daily.item(0, config.date_col)
         if config.top_n is not None:
-            selected = ranked.head(config.top_n)
+            selected = daily.head(config.top_n)
         else:
-            count = max(1, int(len(ranked) * float(config.top_quantile)))
-            selected = ranked.head(count)
-        for _, row in selected.iterrows():
+            count = max(1, int(len(daily) * float(config.top_quantile)))
+            selected = daily.head(count)
+        for row in selected.iter_rows(named=True):
             score = float(row[config.factor_col])
             signals.append(
                 Signal(
-                    date=pd.to_datetime(date).strftime("%Y-%m-%d"),
+                    date=date.isoformat(),
                     symbol=str(row[config.symbol_col]).zfill(6),
                     signal_type="buy",
                     source=config.source,
@@ -81,8 +94,8 @@ class SimpleFactorSignalEngine:
         self.config = config
         self.source = config.source
 
-    def generate_signals(self, factor_data: pd.DataFrame) -> pd.DataFrame:
+    def generate_signals(self, factor_data: Any) -> pl.DataFrame:
         return factor_frame_to_signal_frame(factor_data, config=self.config)
 
-    def generate_signal_book(self, factor_data: pd.DataFrame) -> SignalBook:
+    def generate_signal_book(self, factor_data: Any) -> SignalBook:
         return SignalBook(frame_to_signals(self.generate_signals(factor_data)))

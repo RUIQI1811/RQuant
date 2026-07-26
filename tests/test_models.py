@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 import sys
 import tempfile
 import unittest
@@ -12,30 +13,53 @@ from models.elasticnet import ElasticNetModel
 from models.lightgbm_model import LightGBMModel
 from models.linear_ridge import RidgeModel
 from models.mlp_torch import TorchMLPModel
+from training.qlib_dataset import build_qlib_dataset
 
 
 class ModelInterfaceTests(unittest.TestCase):
-    @unittest.skipUnless(importlib.util.find_spec("lightgbm") is not None, "lightgbm is optional")
+    def test_elasticnet_defaults_are_scaled_for_ranked_features(self):
+        parameters = inspect.signature(ElasticNetModel).parameters
+        self.assertEqual(parameters["alpha"].default, 0.001)
+        self.assertEqual(parameters["l1_ratio"].default, 0.5)
+
+    def test_torch_mlp_default_epochs_is_ten(self):
+        parameter = inspect.signature(TorchMLPModel).parameters["epochs"]
+        self.assertEqual(parameter.default, 10)
+
+    @unittest.skipUnless(importlib.util.find_spec("qlib") is not None, "pyqlib is optional")
     def test_lightgbm_fit_predict(self):
-        x = pd.DataFrame(
-            {
-                "signal": np.linspace(-2.0, 2.0, 40),
-                "noise": np.tile([-1.0, 1.0], 20),
-            }
+        dates = pd.bdate_range("2026-01-02", periods=12)
+        frame = pd.DataFrame(
+            [
+                {
+                    "date": date,
+                    "symbol": str(symbol).zfill(6),
+                    "signal": float(day + symbol * 0.1),
+                    "noise": float((day + symbol) % 2),
+                    "target": float(day * 0.2 - symbol * 0.01),
+                }
+                for day, date in enumerate(dates)
+                for symbol in range(1, 5)
+            ]
         )
-        y = pd.Series(0.8 * x["signal"] - 0.1 * x["noise"])
+        bundle = build_qlib_dataset(
+            train=frame.loc[frame["date"].isin(dates[:10])],
+            test=frame.loc[frame["date"].isin(dates[10:])],
+            feature_cols=("signal", "noise"),
+            target_col="target",
+        )
         model = LightGBMModel(
-            n_estimators=10,
+            n_estimators=5,
             n_jobs=1,
             random_state=7,
-            verbosity=-1,
         )
 
-        model.fit(x, y)
-        predictions = model.predict(x)
+        model.fit(bundle.dataset)
+        predictions = model.predict(bundle.dataset)
 
         self.assertEqual(predictions.name, "score")
-        self.assertEqual(predictions.index.tolist(), x.index.tolist())
+        self.assertEqual(predictions.index.names, ["datetime", "instrument"])
+        self.assertEqual(predictions.index.tolist(), bundle.test_index.tolist())
         self.assertTrue(np.isfinite(predictions).all())
 
     def test_torch_mlp_dependency_failure_is_explicit(self):

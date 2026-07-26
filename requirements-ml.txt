@@ -2,5 +2,4 @@
 
 # Optional supervised-model backends used by train-model.
 scikit-learn==1.9.0
-lightgbm==4.6.0
 torch==2.13.0

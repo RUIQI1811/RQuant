@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-import pandas as pd
+import polars as pl
 
 from domain.signals import SignalBook
 from signals.candidates import Candidate, CandidateRun
@@ -18,7 +18,7 @@ def candidates_to_signal_frame(
     candidates: Iterable[Candidate],
     *,
     default_weight: float | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Convert existing custom strategy candidates to unified signal DataFrame."""
     return signals_to_frame(
         candidate_to_signal(candidate, default_weight=default_weight)
@@ -42,6 +42,6 @@ def candidate_run_to_signal_frame(
     run: CandidateRun,
     *,
     default_weight: float | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Convert a CandidateRun archive into unified signal DataFrame."""
     return candidates_to_signal_frame(run.candidates, default_weight=default_weight)

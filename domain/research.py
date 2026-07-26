@@ -36,3 +36,15 @@ class MultifactorComparisonResult:
     factors: tuple[str, ...]
     target_column: str
     leaderboard: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class FactorResearchPipelineResult:
+    """Summary of one complete factor-library research workflow."""
+
+    factor_family: str
+    evaluated_factors: tuple[str, ...]
+    deduplicated_factors: tuple[str, ...]
+    ml_candidate_factors: tuple[str, ...]
+    models: tuple[str, ...]
+    ml_status: str

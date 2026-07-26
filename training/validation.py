@@ -75,3 +75,63 @@ def build_walk_forward_windows(
         )
         start += test_size
     return windows
+
+
+def build_calendar_year_walk_forward_windows(
+    dates: Iterable[pd.Timestamp],
+    *,
+    train_years: int = 3,
+    test_years: int = 1,
+    purge_size: int = 0,
+) -> list[WalkForwardWindow]:
+    """Build strict prior-calendar-years training and next-year OOS windows.
+
+    For a 2024 test window with ``train_years=3``, only observations from
+    calendar years 2021-2023 are eligible for training. The final
+    ``purge_size`` trading dates are removed from that training slice so a
+    forward-return label cannot overlap the first test observation.
+    """
+    ordered = sorted(pd.Timestamp(date) for date in set(dates))
+    if train_years <= 0 or test_years <= 0:
+        raise ValueError("train_years and test_years must be positive")
+    if purge_size < 0:
+        raise ValueError("purge_size must be non-negative")
+    if not ordered:
+        return []
+
+    available_years = {date.year for date in ordered}
+    first_year = min(available_years)
+    last_year = max(available_years)
+    windows: list[WalkForwardWindow] = []
+    test_start_year = first_year + train_years
+    while test_start_year + test_years - 1 <= last_year:
+        required_train_years = set(
+            range(test_start_year - train_years, test_start_year)
+        )
+        required_test_years = set(
+            range(test_start_year, test_start_year + test_years)
+        )
+        if required_train_years.issubset(available_years) and required_test_years.issubset(
+            available_years
+        ):
+            train_all = [
+                date
+                for date in ordered
+                if date.year in required_train_years
+            ]
+            test = [date for date in ordered if date.year in required_test_years]
+            if len(train_all) > purge_size and test:
+                train = train_all[:-purge_size] if purge_size else train_all
+                purge = train_all[-purge_size:] if purge_size else []
+                windows.append(
+                    WalkForwardWindow(
+                        train_start=train[0],
+                        train_end=train[-1],
+                        test_start=test[0],
+                        test_end=test[-1],
+                        purge_start=purge[0] if purge else None,
+                        purge_end=purge[-1] if purge else None,
+                    )
+                )
+        test_start_year += test_years
+    return windows

@@ -37,9 +37,12 @@ wire formats keep their established columns and keys.
 - `WorkflowStatus` and `WorkflowResult[T]`: canonical lifecycle state, domain result, artifacts, additional values, and
   warnings. It preserves legacy `outputs["summary_path"]` access.
 
-ML workflows use the typed results in `domain/research.py`; custom-strategy
-candidates use `domain/selection.py` and compose a canonical `Signal` rather than
-redefining signal identity.
+ML workflows use the typed results in `domain/research.py`. The same module exposes
+`FactorResearchPipelineResult` for the cross-stage factor run-all summary while the
+individual factor panels, correlation matrices, model internals, and portfolio
+cohorts remain in their original modules. Custom-strategy candidates use
+`domain/selection.py` and compose a canonical `Signal` rather than redefining signal
+identity.
 
 ## Boundary Flow
 

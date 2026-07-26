@@ -22,7 +22,7 @@ DataManager
 - Domain contracts: `domain/` owns cross-boundary values, signals, execution
   records, backtest results, workflow results, and artifact references.
 - UniverseBuilder: `market/data.py::build_stock_pool_by_date`
-- Factor research: `factors/`, `reports/factor_tester.py`, `reports/alpha101_batch.py`, `reports/gtja191_batch.py`
+- Factor research: `factors/`, `reports/factor_tester.py`, `reports/alpha101_batch.py`, `reports/gtja191_batch.py`, `reports/external_factor_batch.py`
 - Label generation: `labels/make_forward_return.py`
 - Model research: `models/`, `training/`
 - Factor and model signals: `signals/`
@@ -53,12 +53,28 @@ DataManager
 - Market-fetch recovery: `market/fetch_kline.py` atomically checkpoints every symbol
   into `_fetch_manifest.json`. Resume accepts only the same date/output/universe
   signature, retries failed or pending symbols, and returns nonzero for partial runs.
+- Point-in-time research context: `market/fetch_context.py` queries Tushare
+  `daily_basic` once per open trading date, converts market-cap units to yuan, writes
+  atomic date partitions, and blocks partial manifests from factor/ML consumers.
 - Research-report consistency: `reports/research_report.py` requires valid core JSON,
   checks review dates/status plus signal/portfolio timing fields, fingerprints every
   input, and blocks inconsistent reports unless diagnostic override is explicit.
 - Compatibility wrappers: legacy wrapper paths
 
 ## Factor Research Timing and NAV Boundaries
+
+`reports/factor_research_pipeline.py` is the cross-stage factor-research
+orchestrator exposed as `factor-run-all`. It owns no formulas, metrics, model
+implementations, or portfolio rules. It validates one YAML-selected factor library,
+then calls the existing resumable batch runner, the daily cross-sectional
+correlation/deduplication boundary, and `training/multifactor.py` in that order.
+Its atomic manifest records each stage and preserves the batch, correlation, and ML
+artifacts as separate evidence layers. External libraries must have explicit
+categories before the expensive stages start. The ML stage is fixed to three full
+calendar training years followed by one full test year and always runs gross plus
+cost-aware long-only portfolio backtests; it never sends legacy long-short
+diagnostics to execution. `run_all.py` remains the separate custom-buy daily
+orchestrator and does not import this factor-research pipeline.
 
 Alpha101 batch research applies the lifecycle catalog before calculation. `active`
 factors run first, `watch` factors remain in research but run and rank after active
@@ -87,6 +103,24 @@ lags factor values by one trading day, calculates Spearman and Pearson correlati
 within each daily stock cross-section, and averages those daily correlations across
 the evaluation period. It does not infer correlations from summary metrics and does
 not route factor values into the custom-strategy path.
+
+`factors/external.py` is the canonical boundary for a user-supplied factor library.
+It validates either wide `date, symbol, factor...` or long
+`date, symbol, factor, factor_value` input, preserves six-digit symbols, rejects
+duplicate primary keys, and leaves values unlagged. `reports/external_factor_batch.py`,
+the external correlation adapter, and `training/build_dataset.py` each apply the same
+mandatory one-day lag at their research boundary. Daily market fields are joined by
+`date, symbol`; static metadata can fill classifications but never historical prices
+or market capitalisation. External factors remain in the factor/ML tracks and cannot
+enter custom buy-strategy code.
+
+The same module validates an optional point-in-time research-context file containing
+daily market cap, sector/industry, market-regime, or trade-state fields. It merges
+only exact `date, symbol` observations into the per-symbol market frames used by
+built-in factor batches, external batches, single-factor research, and ML dataset
+construction. Dynamic classifications take precedence over static metadata and are
+never forward/backward filled. Context-file content participates in resume/data
+signatures, so hydrating or changing the file invalidates stale cached reports.
 
 `reports/factor_tester.py` applies a one-trading-day lag to every factor before IC,
 grouping, statistical NAV, or tradable portfolio construction. The original factor
@@ -168,13 +202,33 @@ portfolio backtest. This prevents model comparison from silently changing the
 feature sample, target, purge gap, or execution path.
 
 `training/build_dataset.py` is the reproducible raw-data adapter for ML. It
-calculates explicitly requested Alpha101, GTJA191, or registered custom factors,
+calculates explicitly requested Alpha101, GTJA191, or registered custom factors and
+can align explicitly requested columns from the validated external factor boundary,
 shifts every feature by exactly one trading day, and separately creates labels
 before date filtering. Its default target is aligned to portfolio execution:
 next-open entry followed by an open-price exit after `N` holding bars. Close-to-close
 returns remain an explicit diagnostic mode. The output manifest records raw-data
 and implementation signatures plus per-column missing counts; GTJA external series
 remain explicit inputs.
+
+`factors/correlation.py` applies the same one-day-lagged, daily
+cross-sectional Spearman/Pearson contract to Alpha101, GTJA191, and validated
+external factor files. The CLI keeps each family's calculator and lifecycle
+configuration separate, then emits one auditable `ml_candidate_factors.csv`
+boundary for downstream walk-forward fitting.
+
+`market/fetch_benchmark.py` is the governed Tushare `index_daily` boundary for
+GTJA factors that explicitly require benchmark open/close. It atomically writes
+one validated date-ordered index file plus a signature manifest. This is kept
+separate from MKT/SMB/HML style-factor inputs: an index series is not silently
+relabelled as a Fama-French factor.
+
+`factors/style_returns.py` constructs that separate style input locally. Daily
+close-to-close stock returns are weighted and sorted only by the latest market
+cap and book-to-market observations strictly preceding the return date. It
+emits an explicit daily 2x3 MKT/SMB/HML file plus input signatures, methodology,
+and incomplete-portfolio drop counts; GTJA030 consumes the file through its
+existing external-data boundary.
 
 `training/train_walk_forward.py` is the executable ML boundary. Feature and label
 files are joined one-to-one on `date, symbol`; feature columns are always explicit.
@@ -184,10 +238,21 @@ requires a purge of at least `N+1` dates; close-to-close `forward_return_Nd` req
 at least `N`. Only test-block predictions enter `predictions.csv` and the unified
 model `signals.csv`; training fitted values are never mixed into reported scores.
 
+`training/qlib_dataset.py` is the only RQuant-to-Qlib data adapter. For each
+walk-forward window it converts the already aligned feature and label rows into
+Qlib's `datetime, instrument` MultiIndex, preserves six-digit instruments, and
+chronologically reserves the tail of the training block as validation. Validation
+must end before the disjoint test block; the outer RQuant purge gap is applied
+before the adapter receives any rows. `models/qlib_models.py` binds `lightgbm`
+directly to Qlib `LGBModel` and exposes Qlib `DEnsembleModel` as
+`doubleensemble`; there is no native-LightGBM fallback or parity branch.
+
 Every window writes predictions, metrics, and a local model artifact before its
 manifest. Resume is allowed only when feature data, label data, configuration, and
 implementation hashes match. Ridge and ElasticNet have tested NumPy fallbacks;
-scikit-learn, LightGBM, and Torch are optional installed backends. The MLP
+scikit-learn, Qlib, and Torch are optional installed backends. Qlib models expose
+only out-of-sample `score` at the RQuant boundary, after which the existing model
+signal adapter and constrained portfolio path are reused. The MLP
 standardizes features and targets from each training window only and supports CPU,
 MPS, or CUDA plus save/load. Model outputs do not modify factor calculators or
 custom-strategy rules.
@@ -199,6 +264,11 @@ orders candidates by score, caps the daily list, executes at the next trading-da
 open, and preserves the existing fee, lot, suspension, limit, and T+1 behavior.
 The current cohort engine is equal-weight only, so unequal daily signal weights are
 rejected instead of silently discarded.
+
+`fit-multifactor --run-backtests` is an explicit orchestration layer over that
+same public bridge. It runs each model's out-of-sample buy signals once with all
+fees zero and once with configured A-share costs, then records both summaries in
+the ML leaderboard and manifest. It does not introduce a short-signal path.
 
 The factor portfolio uses strict staggered cohort slots: an `h`-day holding period
 owns exactly `h` independently funded sleeves and schedules one sleeve per trading

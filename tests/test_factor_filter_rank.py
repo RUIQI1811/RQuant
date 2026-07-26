@@ -67,10 +67,10 @@ class FilterThenRankTest(unittest.TestCase):
 
         self.assertEqual(result.selections["symbol"].tolist(), ["000005", "000004"])
         self.assertEqual(result.selections["rank_position"].tolist(), [1, 2])
-        self.assertEqual(result.signals["score"].tolist(), [1.0, 2 / 3])
-        self.assertEqual(result.signals["weight"].tolist(), [0.5, 0.5])
+        self.assertEqual(result.signals["score"].to_list(), [1.0, 2 / 3])
+        self.assertEqual(result.signals["weight"].to_list(), [0.5, 0.5])
         self.assertEqual(result.daily_summary.loc[0, "filtered_count"], 3)
-        metadata = result.signals.loc[0, "metadata"]
+        metadata = result.signals.item(0, "metadata")
         self.assertEqual(metadata["filter_factor"], "alpha_077")
         self.assertEqual(metadata["rank_factor"], "alpha_040")
         self.assertEqual(metadata["factor_lag_days"], 1)
@@ -88,7 +88,7 @@ class FilterThenRankTest(unittest.TestCase):
             frame,
             config=FilterRankConfig(min_universe=3),
         )
-        self.assertTrue(result.signals.empty)
+        self.assertTrue(result.signals.is_empty())
         self.assertEqual(result.daily_summary.loc[0, "status"], "skipped")
         self.assertIn("below min_universe", result.daily_summary.loc[0, "message"])
 

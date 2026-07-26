@@ -56,8 +56,8 @@ class RankFactorEnsembleTest(unittest.TestCase):
         self.assertEqual(result.selections["rank_position"].tolist(), [1, 2])
         self.assertAlmostEqual(result.selections.loc[0, "ensemble_score"], 0.8125)
         self.assertAlmostEqual(result.selections.loc[1, "ensemble_score"], 0.6875)
-        self.assertEqual(result.signals["weight"].tolist(), [0.5, 0.5])
-        metadata = result.signals.loc[0, "metadata"]
+        self.assertEqual(result.signals["weight"].to_list(), [0.5, 0.5])
+        metadata = result.signals.item(0, "metadata")
         self.assertEqual(metadata["factors"], ["factor_a", "factor_b"])
         self.assertEqual(metadata["ascending_factors"], ["factor_b"])
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -20,6 +20,10 @@ class FactorCatalog:
 
     default_status: str = "active"
     statuses: Mapping[str, object] | None = None
+    factor_details: Mapping[str, Mapping[str, object]] = field(
+        init=False,
+        default_factory=dict,
+    )
 
     def __post_init__(self) -> None:
         if self.default_status not in FACTOR_STATUSES:
@@ -27,6 +31,7 @@ class FactorCatalog:
                 f"default_status must be one of {', '.join(FACTOR_STATUSES)}"
             )
         normalized: dict[str, str] = {}
+        details: dict[str, dict[str, object]] = {}
         for raw_name, raw_entry in (self.statuses or {}).items():
             name = normalize_alpha_name(raw_name)
             raw_status = _status_from_entry(name, raw_entry)
@@ -37,7 +42,14 @@ class FactorCatalog:
                     f"expected one of {', '.join(FACTOR_STATUSES)}"
                 )
             normalized[name] = status
+            if isinstance(raw_entry, Mapping):
+                details[name] = {
+                    str(key): value
+                    for key, value in raw_entry.items()
+                    if str(key) != "status"
+                }
         object.__setattr__(self, "statuses", normalized)
+        object.__setattr__(self, "factor_details", details)
 
     def status_for(self, factor: str | int) -> str:
         """Return the configured status, falling back to the catalog default."""
@@ -69,6 +81,15 @@ class FactorCatalog:
 
         return {normalize_alpha_name(name): self.status_for(name) for name in factors}
 
+    def category_for(self, factor: str | int) -> str:
+        """Return the configured research category or an explicit fallback."""
+        name = normalize_alpha_name(factor)
+        category = self.factor_details.get(name, {}).get("category", "unclassified")
+        return str(category).strip() or "unclassified"
+
+    def category_map(self, factors: Sequence[str] = ALPHA101_NAMES) -> dict[str, str]:
+        return {normalize_alpha_name(name): self.category_for(name) for name in factors}
+
 
 def load_factor_catalog(path: str | Path) -> FactorCatalog:
     """Load factor lifecycle settings from YAML and validate all factor names."""
@@ -82,11 +103,30 @@ def load_factor_catalog(path: str | Path) -> FactorCatalog:
     raw_statuses = payload.get("factors", {}) or {}
     if not isinstance(raw_statuses, dict):
         raise ValueError("factor config 'factors' must be a mapping")
+    raw_categories = payload.get("categories", {}) or {}
+    if not isinstance(raw_categories, dict):
+        raise ValueError("factor config 'categories' must be a mapping")
+    catalog_entries: dict[str, object] = {}
+    for name, entry in raw_statuses.items():
+        if name not in raw_categories:
+            catalog_entries[name] = entry
+        elif isinstance(entry, Mapping):
+            catalog_entries[name] = {**entry, "category": raw_categories[name]}
+        else:
+            catalog_entries[name] = {
+                "status": entry,
+                "category": raw_categories[name],
+            }
     catalog = FactorCatalog(
         default_status=str(payload.get("default_status", "active")).strip().lower(),
-        statuses=raw_statuses,
+        statuses=catalog_entries,
     )
     unknown = set(catalog.statuses).difference(ALPHA101_NAMES)
+    unknown.update(
+        normalize_alpha_name(name)
+        for name in raw_categories
+        if normalize_alpha_name(name) not in ALPHA101_NAMES
+    )
     if unknown:
         raise ValueError(f"unknown Alpha101 factors in config: {', '.join(sorted(unknown))}")
     return catalog

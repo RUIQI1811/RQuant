@@ -12,7 +12,9 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+import polars as pl
 
+from domain.tabular import metadata_to_json
 from signals.schema import Signal, signals_to_frame
 
 from factors.alpha101 import Alpha101, Alpha101Panels, normalize_alpha_name
@@ -74,7 +76,7 @@ class FilterRankConfig:
 
 @dataclass(frozen=True)
 class FilterRankResult:
-    signals: pd.DataFrame
+    signals: pl.DataFrame
     selections: pd.DataFrame
     daily_summary: pd.DataFrame
     filter_status: pd.DataFrame
@@ -346,18 +348,14 @@ def write_filter_rank_reports(
     settings = config or FilterRankConfig()
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    signals_csv = result.signals.copy()
-    if "metadata" in signals_csv.columns:
-        signals_csv["metadata"] = signals_csv["metadata"].map(
-            lambda value: json.dumps(value, ensure_ascii=False, sort_keys=True)
-        )
+    signals_csv = metadata_to_json(result.signals)
     _atomic_write_csv(destination / "signals.csv", signals_csv)
     _atomic_write_csv(destination / "selections.csv", result.selections)
     _atomic_write_csv(destination / "daily_summary.csv", result.daily_summary)
     _atomic_write_csv(destination / "filter_status.csv", result.filter_status)
     _atomic_write_json(
         destination / "signals.json",
-        {"signals": result.signals.to_dict("records")},
+        {"signals": result.signals.to_dicts()},
     )
     manifest = {
         "strategy": "filter_then_rank",
@@ -407,9 +405,12 @@ def _higher_is_better_percentile(
     return values.rank(method="average", pct=True, ascending=not lower_is_better)
 
 
-def _atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:
+def _atomic_write_csv(path: Path, frame: pd.DataFrame | pl.DataFrame) -> None:
     temp = path.with_name(f".{path.name}.tmp")
-    frame.to_csv(temp, index=False)
+    if isinstance(frame, pl.DataFrame):
+        frame.write_csv(temp)
+    else:
+        frame.to_csv(temp, index=False)
     os.replace(temp, path)
 
 

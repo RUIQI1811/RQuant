@@ -51,6 +51,14 @@ class Alpha101BatchConfig:
     commission_rate: float = 0.0003
     slippage_rate: float = 0.0005
     stamp_tax_rate: float = 0.0005
+    industry_col: str | None = "industry"
+    market_cap_col: str | None = "market_cap"
+    market_cap_groups: int = 3
+    market_regime_col: str | None = "market_regime"
+    market_regime_lookback_days: int = 60
+    market_regime_min_periods: int = 20
+    bull_return_threshold: float = 0.10
+    bear_return_threshold: float = -0.10
     oos_start_date: str | None = None
     oos_fraction: float = 0.3
     force: bool = False
@@ -74,6 +82,17 @@ class Alpha101BatchConfig:
             raise ValueError("min_liquidity must be non-negative")
         if any(rate < 0 for rate in (self.commission_rate, self.slippage_rate, self.stamp_tax_rate)):
             raise ValueError("trading cost rates must be non-negative")
+        if self.market_cap_groups < 2:
+            raise ValueError("market_cap_groups must be at least 2")
+        if self.market_regime_lookback_days <= 0:
+            raise ValueError("market_regime_lookback_days must be positive")
+        if not 1 <= self.market_regime_min_periods <= self.market_regime_lookback_days:
+            raise ValueError(
+                "market_regime_min_periods must be between 1 and "
+                "market_regime_lookback_days"
+            )
+        if self.bear_return_threshold >= self.bull_return_threshold:
+            raise ValueError("bear_return_threshold must be below bull_return_threshold")
         if not 0.0 < self.oos_fraction < 1.0:
             raise ValueError("oos_fraction must be between 0 and 1")
         if self.start_date and self.end_date:
@@ -98,6 +117,14 @@ class Alpha101BatchConfig:
             "commission_rate": self.commission_rate,
             "slippage_rate": self.slippage_rate,
             "stamp_tax_rate": self.stamp_tax_rate,
+            "industry_col": self.industry_col,
+            "market_cap_col": self.market_cap_col,
+            "market_cap_groups": self.market_cap_groups,
+            "market_regime_col": self.market_regime_col,
+            "market_regime_lookback_days": self.market_regime_lookback_days,
+            "market_regime_min_periods": self.market_regime_min_periods,
+            "bull_return_threshold": self.bull_return_threshold,
+            "bear_return_threshold": self.bear_return_threshold,
             "oos_start_date": self.oos_start_date,
             "oos_fraction": self.oos_fraction,
         }
@@ -155,12 +182,18 @@ def directory_signature(data_dir: str | Path, metadata_path: str | Path | None =
     digest = hashlib.sha256()
     for path in sorted(root.glob("*.csv")):
         stat = path.stat()
-        digest.update(f"{path.name}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+        digest.update(
+            f"{path.name}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
+            f"{getattr(stat, 'st_flags', 0)}\n".encode()
+        )
     if metadata_path:
         path = Path(metadata_path).resolve()
         if path.exists():
             stat = path.stat()
-            digest.update(f"metadata\0{path}\0{stat.st_size}\0{stat.st_mtime_ns}\n".encode())
+            digest.update(
+                f"metadata\0{path}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
+                f"{getattr(stat, 'st_flags', 0)}\n".encode()
+            )
     return digest.hexdigest()
 
 
@@ -272,6 +305,14 @@ def build_forward_return_frame(
             .stack(future_stack=True)
         )
         base["is_st"] = is_st_long.reindex(base.index)
+    market_regime_panel = getattr(panels, "market_regime", None)
+    if market_regime_panel is not None:
+        regime_long = (
+            market_regime_panel.reindex(index=evaluation_dates, columns=close.columns)
+            .rename_axis(index="date", columns="symbol")
+            .stack(future_stack=True)
+        )
+        base["market_regime"] = regime_long.reindex(base.index)
     for window in windows:
         returns = close.shift(-int(window)).div(close).sub(1.0).loc[evaluation_dates]
         return_long = returns.rename_axis(index="date", columns="symbol").stack(future_stack=True)
@@ -292,6 +333,7 @@ class Alpha101BatchRunner:
         data_signature: str = "unspecified-data",
         implementation_signature: str = "unspecified-implementation",
         factor_statuses: Mapping[str, str] | None = None,
+        factor_categories: Mapping[str, str] | None = None,
     ) -> None:
         normalized = tuple(normalize_alpha_name(name) for name in factors)
         if not normalized:
@@ -305,6 +347,12 @@ class Alpha101BatchRunner:
         supplied_statuses = factor_statuses or {}
         self.factor_statuses = {
             name: str(supplied_statuses.get(name, "active")).strip().lower()
+            for name in self.factors
+        }
+        supplied_categories = factor_categories or {}
+        self.factor_categories = {
+            name: str(supplied_categories.get(name, "unclassified")).strip()
+            or "unclassified"
             for name in self.factors
         }
         invalid_statuses = set(self.factor_statuses.values()).difference(FACTOR_STATUSES)
@@ -335,6 +383,7 @@ class Alpha101BatchRunner:
             self.factors,
             fingerprint=self.fingerprint,
             factor_statuses=self.factor_statuses,
+            factor_categories=self.factor_categories,
         )
 
         status_rows: list[dict[str, object]] = []
@@ -391,6 +440,18 @@ class Alpha101BatchRunner:
                         commission_rate=self.config.commission_rate,
                         slippage_rate=self.config.slippage_rate,
                         stamp_tax_rate=self.config.stamp_tax_rate,
+                        industry_col=self.config.industry_col,
+                        market_cap_col=self.config.market_cap_col,
+                        market_cap_groups=self.config.market_cap_groups,
+                        market_regime_col=self.config.market_regime_col,
+                        market_regime_lookback_days=(
+                            self.config.market_regime_lookback_days
+                        ),
+                        market_regime_min_periods=(
+                            self.config.market_regime_min_periods
+                        ),
+                        bull_return_threshold=self.config.bull_return_threshold,
+                        bear_return_threshold=self.config.bear_return_threshold,
                         oos_start_date=self.config.oos_start_date,
                         oos_fraction=self.config.oos_fraction,
                     ),
@@ -453,6 +514,7 @@ class Alpha101BatchRunner:
         manifest["completed_at"] = _utc_now()
         manifest["success_count"] = int(status["status"].isin(["success", "skipped"]).sum())
         manifest["failed_count"] = int(status["status"].eq("failed").sum())
+        write_long_only_profitability_reports(self.output_dir, leaderboard)
         _atomic_write_json(self.output_dir / "batch_manifest.json", manifest)
         return Alpha101BatchResult(self.output_dir, status, leaderboard)
 
@@ -546,6 +608,7 @@ def build_leaderboard(
     *,
     fingerprint: str | None = None,
     factor_statuses: Mapping[str, str] | None = None,
+    factor_categories: Mapping[str, str] | None = None,
 ) -> pd.DataFrame:
     """Combine successful factor reports into one row per factor and horizon."""
 
@@ -564,6 +627,7 @@ def build_leaderboard(
         top_n = _read_csv(factor_dir / "top_n_summary.csv")
         tradable_top_n = _read_csv(factor_dir / "tradable_top_n.csv")
         tradable_top_quantile = _read_csv(factor_dir / "tradable_top_quantile.csv")
+        horizon_effectiveness = _read_csv(factor_dir / "horizon_effectiveness.csv")
         neutralized = _read_csv(factor_dir / "neutralized_ic_summary.csv")
         sample = _read_csv(factor_dir / "sample_performance.csv")
         tradable = _read_csv(factor_dir / "tradable_long_short.csv")
@@ -640,6 +704,11 @@ def build_leaderboard(
             if {"window", "date"}.issubset(tradable_top_quantile.columns)
             else pd.DataFrame()
         )
+        effectiveness_by_window = (
+            horizon_effectiveness.set_index("window")
+            if "window" in horizon_effectiveness.columns
+            else pd.DataFrame()
+        )
         for _, ic_row in ic.iterrows():
             window = int(ic_row["window"])
             group_row = (
@@ -668,6 +737,25 @@ def build_leaderboard(
                 and window in tradable_quantile_by_window.index
                 else pd.Series(dtype=object)
             )
+            effectiveness_row = (
+                effectiveness_by_window.loc[window]
+                if not effectiveness_by_window.empty
+                and window in effectiveness_by_window.index
+                else pd.Series(dtype=object)
+            )
+            preferred_long_side = effectiveness_row.get("preferred_long_side")
+            if preferred_long_side == "high_factor":
+                preferred_prefix = "high"
+            elif preferred_long_side == "low_factor":
+                preferred_prefix = "low"
+            else:
+                preferred_prefix = None
+
+            def preferred_metric(metric: str) -> object:
+                if preferred_prefix is None:
+                    return np.nan
+                return effectiveness_row.get(f"{preferred_prefix}_{metric}")
+
             rank_icir = pd.to_numeric(pd.Series([ic_row.get("rank_icir")]), errors="coerce").iloc[0]
             rank_ic_mean = pd.to_numeric(pd.Series([ic_row.get("rank_ic_mean")]), errors="coerce").iloc[0]
             if pd.isna(rank_ic_mean):
@@ -677,6 +765,9 @@ def build_leaderboard(
             row = {
                 "factor": factor,
                 "factor_status": (factor_statuses or {}).get(factor, "active"),
+                "factor_category": (factor_categories or {}).get(
+                    factor, "unclassified"
+                ),
                 "window": window,
                 "direction": direction,
                 "rank_ic_mean": rank_ic_mean,
@@ -711,6 +802,49 @@ def build_leaderboard(
                 "tradable_top_quantile_selected_count": tradable_quantile_row.get(
                     "selected_count"
                 ),
+                "preferred_long_side": preferred_long_side,
+                "preferred_gross_annualized_return": preferred_metric(
+                    "gross_annualized_return"
+                ),
+                "preferred_gross_sharpe": preferred_metric("gross_sharpe"),
+                "preferred_net_annualized_return": preferred_metric(
+                    "net_annualized_return"
+                ),
+                "preferred_net_sharpe": preferred_metric("net_sharpe"),
+                "preferred_profitable_before_cost": preferred_metric(
+                    "profitable_before_cost"
+                ),
+                "preferred_profitable_after_cost": preferred_metric(
+                    "profitable_after_cost"
+                ),
+                "high_gross_annualized_return": effectiveness_row.get(
+                    "high_gross_annualized_return"
+                ),
+                "high_gross_sharpe": effectiveness_row.get("high_gross_sharpe"),
+                "high_net_annualized_return": effectiveness_row.get(
+                    "high_net_annualized_return"
+                ),
+                "high_net_sharpe": effectiveness_row.get("high_net_sharpe"),
+                "low_gross_annualized_return": effectiveness_row.get(
+                    "low_gross_annualized_return"
+                ),
+                "low_gross_sharpe": effectiveness_row.get("low_gross_sharpe"),
+                "low_net_annualized_return": effectiveness_row.get(
+                    "low_net_annualized_return"
+                ),
+                "low_net_sharpe": effectiveness_row.get("low_net_sharpe"),
+                "high_profitable_before_cost": effectiveness_row.get(
+                    "high_profitable_before_cost"
+                ),
+                "high_profitable_after_cost": effectiveness_row.get(
+                    "high_profitable_after_cost"
+                ),
+                "low_profitable_before_cost": effectiveness_row.get(
+                    "low_profitable_before_cost"
+                ),
+                "low_profitable_after_cost": effectiveness_row.get(
+                    "low_profitable_after_cost"
+                ),
                 "tradable_annualized_return": _first_available(
                     tradable_quantile_row.get("annualized_return"),
                     tradable_row.get("annualized_return"),
@@ -733,6 +867,7 @@ def build_leaderboard(
     columns = [
         "factor",
         "factor_status",
+        "factor_category",
         "window",
         "direction",
         "rank_ic_mean",
@@ -802,6 +937,25 @@ def build_leaderboard(
         "tradable_top_quantile_sharpe",
         "tradable_top_quantile_cum_nav",
         "tradable_top_quantile_selected_count",
+        "preferred_long_side",
+        "preferred_gross_annualized_return",
+        "preferred_gross_sharpe",
+        "preferred_net_annualized_return",
+        "preferred_net_sharpe",
+        "preferred_profitable_before_cost",
+        "preferred_profitable_after_cost",
+        "high_gross_annualized_return",
+        "high_gross_sharpe",
+        "high_net_annualized_return",
+        "high_net_sharpe",
+        "low_gross_annualized_return",
+        "low_gross_sharpe",
+        "low_net_annualized_return",
+        "low_net_sharpe",
+        "high_profitable_before_cost",
+        "high_profitable_after_cost",
+        "low_profitable_before_cost",
+        "low_profitable_after_cost",
         "top_bottom_return",
         "monotonic",
         "neutralized_rank_ic_mean",
@@ -831,6 +985,82 @@ def build_leaderboard(
         .drop(columns="_status_order")
         .reset_index(drop=True)
     )
+
+
+def build_long_only_profitability(leaderboard: pd.DataFrame) -> pd.DataFrame:
+    """Normalize high/low long-only results into one auditable row per side."""
+
+    columns = [
+        "factor",
+        "factor_status",
+        "factor_category",
+        "window",
+        "ic_direction",
+        "rank_ic_mean",
+        "side",
+        "preferred_by_ic",
+        "gross_annualized_return",
+        "gross_sharpe",
+        "net_annualized_return",
+        "net_sharpe",
+        "profitable_before_cost",
+        "profitable_after_cost",
+    ]
+    rows: list[dict[str, object]] = []
+
+    def as_bool(value: object) -> bool:
+        return bool(value) if pd.notna(value) else False
+
+    for _, row in leaderboard.iterrows():
+        for prefix, side in (("high", "high_factor"), ("low", "low_factor")):
+            rows.append(
+                {
+                    "factor": row.get("factor"),
+                    "factor_status": row.get("factor_status"),
+                    "factor_category": row.get("factor_category"),
+                    "window": row.get("window"),
+                    "ic_direction": row.get("direction"),
+                    "rank_ic_mean": row.get("rank_ic_mean"),
+                    "side": side,
+                    "preferred_by_ic": row.get("preferred_long_side") == side,
+                    "gross_annualized_return": row.get(
+                        f"{prefix}_gross_annualized_return"
+                    ),
+                    "gross_sharpe": row.get(f"{prefix}_gross_sharpe"),
+                    "net_annualized_return": row.get(
+                        f"{prefix}_net_annualized_return"
+                    ),
+                    "net_sharpe": row.get(f"{prefix}_net_sharpe"),
+                    "profitable_before_cost": as_bool(
+                        row.get(f"{prefix}_profitable_before_cost", False)
+                    ),
+                    "profitable_after_cost": as_bool(
+                        row.get(f"{prefix}_profitable_after_cost", False)
+                    ),
+                }
+            )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def write_long_only_profitability_reports(
+    output_dir: str | Path,
+    leaderboard: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Write complete and profitable-only long-only factor selections."""
+
+    profitability = build_long_only_profitability(leaderboard)
+    profitable = (
+        profitability.loc[
+            profitability["profitable_before_cost"]
+            | profitability["profitable_after_cost"]
+        ].reset_index(drop=True)
+        if not profitability.empty
+        else profitability
+    )
+    destination = Path(output_dir)
+    _atomic_write_csv(destination / "long_only_profitability.csv", profitability)
+    _atomic_write_csv(destination / "profitable_long_only.csv", profitable)
+    return profitability, profitable
 
 
 def _read_csv(path: Path) -> pd.DataFrame:

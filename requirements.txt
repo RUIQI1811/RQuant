@@ -1,6 +1,7 @@
 numba==0.64.0
 numpy==2.4.3
 pandas==2.3.3
+polars==1.43.0
 plotly==6.5.0
 protobuf==6.33.0
 google-genai==2.9.0

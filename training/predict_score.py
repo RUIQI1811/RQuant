@@ -3,59 +3,67 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
+from domain.tabular import to_polars
 from signals.schema import Signal, signals_to_frame
 
 
 def scores_to_signals(
-    scores: pd.DataFrame,
+    scores: Any,
     source: str,
     date_col: str = "date",
     symbol_col: str = "symbol",
     score_col: str = "score",
     top_n: int | None = None,
     top_quantile: float | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
+    frame = to_polars(scores)
     required = {date_col, symbol_col, score_col}
-    missing = sorted(required.difference(scores.columns))
+    missing = sorted(required.difference(frame.columns))
     if missing:
         raise ValueError(f"missing required columns: {missing}")
     if top_n is not None and top_n <= 0:
         raise ValueError("top_n must be positive")
     if top_quantile is not None and not 0 < top_quantile <= 1:
         raise ValueError("top_quantile must be in (0, 1]")
-    frame = scores[[date_col, symbol_col, score_col]].copy()
-    frame[date_col] = pd.to_datetime(frame[date_col])
-    frame[symbol_col] = frame[symbol_col].astype(str).str.zfill(6)
-    frame[score_col] = pd.to_numeric(frame[score_col], errors="coerce")
-    if frame.duplicated([date_col, symbol_col]).any():
+    frame = frame.select([date_col, symbol_col, score_col]).with_columns(
+        pl.col(date_col)
+        .cast(pl.String)
+        .str.slice(0, 10)
+        .str.to_date("%Y-%m-%d", strict=False),
+        pl.col(symbol_col).cast(pl.String).str.pad_start(6, "0"),
+        pl.col(score_col).cast(pl.Float64, strict=False),
+    )
+    if frame.select([date_col, symbol_col]).is_duplicated().any():
         raise ValueError("duplicate date/symbol score rows are not allowed")
-    if frame[score_col].isna().any() or not np.isfinite(frame[score_col]).all():
+    invalid_score = pl.col(score_col).is_null() | pl.col(score_col).is_nan() | pl.col(score_col).is_infinite()
+    if frame.select(invalid_score.any()).item():
         raise ValueError("scores must contain only finite values")
 
+    frame = frame.sort(
+        [date_col, score_col, symbol_col],
+        descending=[False, True, False],
+        maintain_order=True,
+    )
+
     signals: list[Signal] = []
-    for date, daily in frame.groupby(date_col, sort=True):
-        ranked = daily.sort_values(
-            [score_col, symbol_col],
-            ascending=[False, True],
-            kind="mergesort",
-        ).copy()
+    for ranked in frame.partition_by(date_col, maintain_order=True):
+        date = ranked.item(0, date_col)
         if top_n is not None:
-            selected = ranked.head(top_n).copy()
+            selected = ranked.head(top_n)
         elif top_quantile is not None:
-            selected = ranked.head(max(1, math.ceil(len(ranked) * top_quantile))).copy()
+            selected = ranked.head(max(1, math.ceil(len(ranked) * top_quantile)))
         else:
             selected = ranked
-        selected["rank_position"] = np.arange(1, len(selected) + 1)
         weight = 1.0 / len(selected) if len(selected) else None
-        for _, row in selected.iterrows():
+        for rank_position, row in enumerate(selected.iter_rows(named=True), start=1):
             score = float(row[score_col])
             signals.append(
                 Signal(
-                    date=pd.Timestamp(date).strftime("%Y-%m-%d"),
+                    date=date.isoformat(),
                     symbol=str(row[symbol_col]).zfill(6),
                     signal_type="buy",
                     source=f"model_{source}",
@@ -63,7 +71,7 @@ def scores_to_signals(
                     weight=weight,
                     metadata={
                         "model_score": score,
-                        "rank_position": int(row["rank_position"]),
+                        "rank_position": rank_position,
                         "daily_universe_count": len(ranked),
                     },
                 )

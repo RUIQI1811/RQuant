@@ -1,0 +1,2 @@
+pyqlib==0.9.7
+lightgbm==4.6.0

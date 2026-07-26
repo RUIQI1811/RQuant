@@ -2,7 +2,7 @@ import sys
 import unittest
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -11,7 +11,7 @@ from signals.factor_adapters import FactorSignalConfig, factor_frame_to_signal_f
 
 class FactorSignalTest(unittest.TestCase):
     def test_factor_frame_selects_top_n_each_day(self):
-        data = pd.DataFrame(
+        data = pl.DataFrame(
             {
                 "date": ["2026-01-01", "2026-01-01", "2026-01-01", "2026-01-02", "2026-01-02"],
                 "symbol": ["000001", "000002", "000003", "000001", "000002"],
@@ -24,9 +24,9 @@ class FactorSignalTest(unittest.TestCase):
             config=FactorSignalConfig(source="factor_test", top_n=1),
         )
 
-        self.assertEqual(signals["symbol"].tolist(), ["000002", "000001"])
-        self.assertEqual(signals["source"].tolist(), ["factor_test", "factor_test"])
-        self.assertEqual(signals["score"].tolist(), [0.3, 0.5])
+        self.assertEqual(signals["symbol"].to_list(), ["000002", "000001"])
+        self.assertEqual(signals["source"].to_list(), ["factor_test", "factor_test"])
+        self.assertEqual(signals["score"].to_list(), [0.3, 0.5])
 
 
 if __name__ == "__main__":

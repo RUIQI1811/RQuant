@@ -2,6 +2,7 @@
 
 from .base import FactorSignalEngine
 from .ensemble import RankEnsembleConfig, RankEnsembleResult, rank_factor_ensemble
+from .external import ExternalFactorFrame, load_external_factor_file
 from signals.factor_adapters import (
     FactorSignalConfig,
     SimpleFactorSignalEngine,
@@ -13,6 +14,8 @@ __all__ = [
     "RankEnsembleConfig",
     "RankEnsembleResult",
     "rank_factor_ensemble",
+    "ExternalFactorFrame",
+    "load_external_factor_file",
     "FactorSignalConfig",
     "SimpleFactorSignalEngine",
     "factor_frame_to_signal_frame",

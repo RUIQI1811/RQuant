@@ -42,7 +42,7 @@ class SignalSchemaTest(unittest.TestCase):
         restored = frame_to_signals(frame)
 
         self.assertEqual(list(frame.columns), ["date", "symbol", "signal_type", "source", "score", "weight", "metadata"])
-        self.assertEqual(frame.loc[0, "symbol"], "000001")
+        self.assertEqual(frame.item(0, "symbol"), "000001")
         self.assertEqual(restored[0].symbol, "000001")
         self.assertEqual(restored[0].metadata["factor_value"], 0.5)
 
@@ -62,7 +62,7 @@ class SignalSchemaTest(unittest.TestCase):
         self.assertEqual(signal.source, "brick")
         self.assertEqual(signal.score, 9.03)
         self.assertEqual(signal.metadata["brick_growth"], 9.03)
-        self.assertEqual(frame.loc[0, "source"], "brick")
+        self.assertEqual(frame.item(0, "source"), "brick")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,11 @@ from reports.factor_tester import (  # noqa: E402
 )
 from factors.alpha101 import ALPHA101_NAMES  # noqa: E402
 from factors.gtja191 import GTJA191_NAMES  # noqa: E402
+from factors.external import (  # noqa: E402
+    load_research_context_file,
+    merge_context_with_raw_data,
+    merge_context_with_research_frame,
+)
 from factors.brick import (  # noqa: E402
     LISTED_BRICK_FACTORS,
     is_brick_factor,
@@ -63,6 +68,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     )
     parser.add_argument("--benchmark-file", default=None, help="Optional benchmark OHLC CSV for GTJA factors")
     parser.add_argument("--style-factor-file", default=None, help="Optional date,mkt,smb,hml CSV for GTJA factors")
+    parser.add_argument(
+        "--context-file",
+        default=None,
+        help="Optional point-in-time date,symbol market-cap/classification/regime CSV",
+    )
+    parser.add_argument("--context-date-col", default="date")
+    parser.add_argument("--context-symbol-col", default="symbol")
     parser.add_argument("--output", default="factor_report", help="Report output root")
     parser.add_argument("--windows", nargs="+", default=["1", "5", "10", "20"], help="Forward return windows")
     parser.add_argument("--groups", type=int, default=10, help="Number of quantile groups")
@@ -79,6 +91,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--close-col", default="close")
     parser.add_argument("--industry-col", default="industry")
     parser.add_argument("--market-cap-col", default="market_cap")
+    parser.add_argument(
+        "--market-cap-groups",
+        type=int,
+        default=3,
+        help="Daily point-in-time market-cap buckets, default 3 (small/mid/large)",
+    )
+    parser.add_argument(
+        "--market-regime-col",
+        default="market_regime",
+        help="Optional supplied bull/bear/sideways column; otherwise derive from the lagged equal-weight market proxy",
+    )
+    parser.add_argument("--market-regime-lookback-days", type=int, default=60)
+    parser.add_argument("--market-regime-min-periods", type=int, default=20)
+    parser.add_argument("--bull-return-threshold", type=float, default=0.10)
+    parser.add_argument("--bear-return-threshold", type=float, default=-0.10)
     parser.add_argument("--universe-col", default=None)
     parser.add_argument("--tradeable-col", default="is_tradeable")
     parser.add_argument("--suspended-col", default="is_suspended")
@@ -105,9 +132,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 def load_factor_data(args: argparse.Namespace) -> pd.DataFrame:
     """Load a long-format factor file or adapt current raw OHLCV CSVs."""
+    context = (
+        load_research_context_file(
+            args.context_file,
+            date_col=args.context_date_col,
+            symbol_col=args.context_symbol_col,
+        )
+        if args.context_file
+        else None
+    )
     if args.factor_file:
-        return pd.read_csv(args.factor_file)
+        return merge_context_with_research_frame(
+            pd.read_csv(args.factor_file, dtype={args.symbol_col: str}),
+            context,
+            date_col=args.date_col,
+            symbol_col=args.symbol_col,
+        )
     raw_data = load_raw_data(args.data)
+    raw_data = merge_context_with_raw_data(raw_data, context)
     metadata = None
     if args.metadata:
         metadata_path = Path(args.metadata)
@@ -158,6 +200,12 @@ def run_from_args(args: argparse.Namespace) -> Path | None:
         universe_col=args.universe_col,
         industry_col=args.industry_col,
         market_cap_col=args.market_cap_col,
+        market_cap_groups=args.market_cap_groups,
+        market_regime_col=args.market_regime_col,
+        market_regime_lookback_days=args.market_regime_lookback_days,
+        market_regime_min_periods=args.market_regime_min_periods,
+        bull_return_threshold=args.bull_return_threshold,
+        bear_return_threshold=args.bear_return_threshold,
         tradeable_col=args.tradeable_col,
         suspended_col=args.suspended_col,
         limit_up_col=args.limit_up_col,

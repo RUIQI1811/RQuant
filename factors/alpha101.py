@@ -94,6 +94,7 @@ class Alpha101Panels:
     subindustry: Panel | None = None
     is_st: Panel | None = None
     turnover_value: Panel | None = None
+    market_regime: Panel | None = None
 
     def adv(self, periods: float | int) -> Panel:
         return ts_sum(self.volume, periods) / _window(periods)
@@ -702,6 +703,43 @@ def _classification_panel(
     return pd.DataFrame([row.to_numpy()] * len(dates), index=dates, columns=symbols)
 
 
+def _wide_classification_field(
+    raw_data: Mapping[str, pd.DataFrame],
+    column: str,
+    *,
+    dates: pd.DatetimeIndex,
+    symbols: Sequence[str],
+) -> Panel | None:
+    """Build an exact-date categorical panel without forward filling."""
+
+    series: dict[str, pd.Series] = {}
+    for raw_symbol, raw_frame in raw_data.items():
+        if raw_frame is None or raw_frame.empty:
+            continue
+        frame = raw_frame.copy()
+        frame.columns = [str(value).lower() for value in frame.columns]
+        if "date" not in frame.columns or column not in frame.columns:
+            continue
+        index = pd.to_datetime(frame["date"])
+        values = frame[column].astype("object")
+        value_series = pd.Series(values.to_numpy(), index=index)
+        series[str(raw_symbol).zfill(6)] = value_series.groupby(level=0).last()
+    if not series:
+        return None
+    return pd.DataFrame(series).reindex(index=dates, columns=symbols).sort_index()
+
+
+def _combine_classification_panels(
+    point_in_time: Panel | None,
+    static: Panel | None,
+) -> Panel | None:
+    if point_in_time is None:
+        return static
+    if static is None:
+        return point_in_time
+    return point_in_time.combine_first(static)
+
+
 def build_alpha101_panels(
     raw_data: Mapping[str, pd.DataFrame],
     *,
@@ -747,9 +785,24 @@ def build_alpha101_panels(
             else required["close"] * required["volume"]
         )
 
-    sector = _classification_panel(metadata, "sector", dates=dates, symbols=symbols)
-    industry = _classification_panel(metadata, "industry", dates=dates, symbols=symbols)
-    subindustry = _classification_panel(metadata, "subindustry", dates=dates, symbols=symbols)
+    sector = _combine_classification_panels(
+        _wide_classification_field(raw_data, "sector", dates=dates, symbols=symbols),
+        _classification_panel(metadata, "sector", dates=dates, symbols=symbols),
+    )
+    industry = _combine_classification_panels(
+        _wide_classification_field(raw_data, "industry", dates=dates, symbols=symbols),
+        _classification_panel(metadata, "industry", dates=dates, symbols=symbols),
+    )
+    subindustry = _combine_classification_panels(
+        _wide_classification_field(raw_data, "subindustry", dates=dates, symbols=symbols),
+        _classification_panel(metadata, "subindustry", dates=dates, symbols=symbols),
+    )
+    market_regime = _wide_classification_field(
+        raw_data,
+        "market_regime",
+        dates=dates,
+        symbols=symbols,
+    )
     # A single industry column is still useful for every neutralization level in
     # A-share datasets that do not carry a three-level classification hierarchy.
     sector = sector if sector is not None else industry
@@ -769,6 +822,7 @@ def build_alpha101_panels(
         subindustry=subindustry,
         is_st=is_st,
         turnover_value=turnover_value,
+        market_regime=market_regime,
     )
 
 
@@ -821,6 +875,12 @@ def alpha101_to_long(
             panels.turnover_value.rename_axis(index="date", columns="symbol")
             .stack(future_stack=True)
             .rename("turnover_value")
+        )
+    if panels.market_regime is not None:
+        parts.append(
+            panels.market_regime.rename_axis(index="date", columns="symbol")
+            .stack(future_stack=True)
+            .rename("market_regime")
         )
     result = pd.concat(parts, axis=1).reset_index()
     return result

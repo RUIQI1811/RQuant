@@ -101,6 +101,100 @@ class FactorTesterTest(unittest.TestCase):
         self.assertAlmostEqual(group_summary.loc[0, "top_bottom_return"], 0.02)
         self.assertTrue(bool(group_summary.loc[0, "monotonic"]))
 
+    def test_segmented_ic_reports_cap_industry_regime_and_year(self):
+        rows = []
+        regimes = ("bull", "bear", "sideways")
+        for date_index, date in enumerate(pd.bdate_range("2025-01-02", periods=3)):
+            for symbol_index in range(9):
+                rows.append(
+                    {
+                        "date": date,
+                        "symbol": f"{symbol_index + 1:06d}",
+                        "factor_value": float(symbol_index),
+                        "forward_return_1d": float(symbol_index) / 100.0,
+                        "close": 10.0,
+                        "market_cap": float(symbol_index + 1) * 1000.0,
+                        "industry": ("bank", "tech", "consumer")[symbol_index % 3],
+                        "market_regime": regimes[date_index],
+                    }
+                )
+        tester = FactorTester(
+            pd.DataFrame(rows),
+            factor_name="segmented",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=3,
+                market_cap_groups=3,
+                min_periods=2,
+            ),
+        )
+
+        cap, cap_summary = tester.market_cap_ic_test()
+        industry, industry_summary = tester.industry_ic_test()
+        regime, regime_summary = tester.market_regime_ic_test()
+        annual = tester.annual_ic_test()
+
+        self.assertEqual(set(cap["market_cap_bucket_label"]), {"small", "mid", "large"})
+        self.assertTrue(cap_summary["rank_ic_mean"].dropna().eq(1.0).all())
+        self.assertEqual(set(industry["industry"]), {"bank", "tech", "consumer"})
+        self.assertEqual(len(industry), 9)
+        first_date_industries = industry.loc[
+            industry["date"].eq(industry["date"].min())
+        ]
+        self.assertEqual(first_date_industries["count"].tolist(), [0, 0, 0])
+        self.assertTrue(first_date_industries["ic"].isna().all())
+        self.assertTrue(first_date_industries["rank_ic"].isna().all())
+        self.assertTrue(industry_summary["rank_ic_mean"].dropna().eq(1.0).all())
+        self.assertEqual(set(regime["market_regime"].dropna()), {"bear", "sideways"})
+        self.assertEqual(set(regime_summary["market_regime"]), {"bear", "sideways"})
+        self.assertEqual(annual["year"].tolist(), [2025])
+
+    def test_high_and_low_long_only_report_gross_and_after_cost_results(self):
+        dates = pd.bdate_range("2025-01-02", periods=3)
+        rows = []
+        closes = {
+            0: (10.0, 10.0, 10.0, 10.0),
+            1: (10.0, 10.0, 10.0, 10.0),
+            2: (9.0, 9.5, 10.5, 11.0),
+        }
+        for date_index, date in enumerate(dates):
+            for symbol_index, close in enumerate(closes[date_index]):
+                rows.append(
+                    {
+                        "date": date,
+                        "symbol": f"{symbol_index + 1:06d}",
+                        "factor_value": float(symbol_index + 1),
+                        "close": close,
+                        "volume": 1000.0,
+                    }
+                )
+        tester = FactorTester(
+            pd.DataFrame(rows),
+            factor_name="direction",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                top_n_counts=(1,),
+                commission_rate=0.001,
+                slippage_rate=0.0,
+                stamp_tax_rate=0.001,
+            ),
+        )
+
+        high = tester.tradable_top_quantile_test()
+        low = tester.tradable_bottom_quantile_test()
+        effectiveness = tester.horizon_effectiveness_test(
+            ic_summary=tester.ic_test()[1],
+            tradable_top_quantile=high,
+            tradable_bottom_quantile=low,
+        )
+
+        self.assertIn("gross_annualized_return", high.columns)
+        self.assertIn("net_annualized_return", high.columns)
+        self.assertGreater(high.iloc[0]["gross_annualized_return"], low.iloc[0]["gross_annualized_return"])
+        self.assertGreater(high.iloc[0]["gross_annualized_return"], high.iloc[0]["net_annualized_return"])
+        self.assertEqual(effectiveness.loc[0, "preferred_long_side"], "high_factor")
+
     def test_top_n_return_uses_long_only_fixed_counts(self):
         tester = FactorTester(
             _sample_factor_frame(),

@@ -6,11 +6,15 @@ import numpy as np
 import pandas as pd
 
 
+DEFAULT_ELASTICNET_ALPHA = 1e-3
+DEFAULT_ELASTICNET_L1_RATIO = 0.5
+
+
 class ElasticNetModel:
     def __init__(
         self,
-        alpha: float = 1.0,
-        l1_ratio: float = 0.5,
+        alpha: float = DEFAULT_ELASTICNET_ALPHA,
+        l1_ratio: float = DEFAULT_ELASTICNET_L1_RATIO,
         *,
         max_iter: int = 10000,
         tol: float = 1e-6,

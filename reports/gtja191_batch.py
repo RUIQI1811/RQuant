@@ -14,6 +14,7 @@ from reports.alpha101_batch import (
     _atomic_write_json,
     _atomic_write_csv,
     build_leaderboard,
+    write_long_only_profitability_reports,
     _read_json,
     build_run_fingerprint,
 )
@@ -114,6 +115,7 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
         data_signature: str = "unspecified-data",
         implementation_signature: str = "unspecified-implementation",
         factor_statuses: Mapping[str, str] | None = None,
+        factor_categories: Mapping[str, str] | None = None,
     ) -> None:
         normalized = tuple(normalize_gtja_name(name) for name in factors)
         if not normalized:
@@ -131,6 +133,16 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
         }
         self.factor_statuses = {
             name: str(supplied.get(name, "active")).strip().lower()
+            for name in self.factors
+        }
+        supplied_categories = factor_categories or {}
+        self.leaderboard_factor_categories = {
+            name: str(supplied_categories.get(name, "unclassified")).strip()
+            or "unclassified"
+            for name in GTJA191_NAMES
+        }
+        self.factor_categories = {
+            name: self.leaderboard_factor_categories[name]
             for name in self.factors
         }
         invalid = set(self.leaderboard_factor_statuses.values()).difference(FACTOR_STATUSES)
@@ -167,6 +179,8 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
             GTJA191_NAMES,
             fingerprint=self.fingerprint,
             factor_statuses=self.leaderboard_factor_statuses,
+            factor_categories=self.leaderboard_factor_categories,
         )
         _atomic_write_csv(self.output_dir / "leaderboard.csv", leaderboard)
+        write_long_only_profitability_reports(self.output_dir, leaderboard)
         return GTJA191BatchResult(self.output_dir, status, leaderboard)

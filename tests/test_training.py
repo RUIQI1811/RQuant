@@ -15,17 +15,25 @@ from training.train_walk_forward import (
 )
 from training.validation import (
     WalkForwardWindow,
+    build_calendar_year_walk_forward_windows,
     build_walk_forward_windows,
     validate_feature_label_frame,
 )
 
 
 class TrainingValidationTests(unittest.TestCase):
+    def test_walk_forward_mlp_default_epochs_is_ten(self):
+        config = WalkForwardTrainingConfig(
+            feature_cols=("feature",),
+            target_col="forward_return_1d",
+        )
+        self.assertEqual(config.mlp_epochs, 10)
+
     def test_optional_backends_complete_real_walk_forward_windows(self):
         backends = []
         for model_name, module_name in (
             ("elasticnet", "sklearn"),
-            ("lightgbm", "lightgbm"),
+            ("lightgbm", "qlib"),
             ("mlp", "torch"),
         ):
             try:
@@ -88,6 +96,8 @@ class TrainingValidationTests(unittest.TestCase):
 
                     self.assertTrue(np.isfinite(predictions["score"]).all())
                     self.assertGreater(summary["prediction_count"], 0)
+                    if model_name == "lightgbm":
+                        self.assertEqual(summary["model_backend"], "qlib")
                     artifact_name = "model.pt" if model_name == "mlp" else "model.pkl"
                     self.assertTrue(any(output_dir.glob(f"windows/*/{artifact_name}")))
 
@@ -106,6 +116,33 @@ class TrainingValidationTests(unittest.TestCase):
         self.assertEqual(windows[0].purge_end, dates[4])
         self.assertEqual(windows[0].test_start, dates[5])
         self.assertEqual(windows[0].test_end, dates[6])
+
+    def test_calendar_year_windows_train_three_years_and_predict_next_year(self):
+        dates = pd.DatetimeIndex(
+            [
+                *pd.bdate_range("2020-01-02", "2020-01-10"),
+                *pd.bdate_range("2021-01-04", "2021-01-12"),
+                *pd.bdate_range("2022-01-03", "2022-01-11"),
+                *pd.bdate_range("2023-01-03", "2023-01-11"),
+                *pd.bdate_range("2024-01-02", "2024-01-10"),
+            ]
+        )
+
+        windows = build_calendar_year_walk_forward_windows(
+            dates,
+            train_years=3,
+            test_years=1,
+            purge_size=2,
+        )
+
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0].train_start.year, 2020)
+        self.assertEqual(windows[0].train_end.year, 2022)
+        self.assertEqual(windows[0].purge_start.year, 2022)
+        self.assertEqual(windows[0].test_start.year, 2023)
+        self.assertEqual(windows[0].test_end.year, 2023)
+        self.assertEqual(windows[1].train_start.year, 2021)
+        self.assertEqual(windows[1].test_start.year, 2024)
 
     def test_target_horizon_is_inferred_but_generic_target_requires_explicit_purge(self):
         self.assertEqual(infer_target_horizon("forward_return_20d"), 20)
@@ -217,9 +254,9 @@ class TrainingValidationTests(unittest.TestCase):
         scores = pd.DataFrame({"date": ["2026-01-02"], "symbol": ["1"], "score": [0.8]})
         signals = scores_to_signals(scores, source="ridge")
 
-        self.assertEqual(signals.loc[0, "symbol"], "000001")
-        self.assertEqual(signals.loc[0, "source"], "model_ridge")
-        self.assertIsInstance(signals.loc[0, "metadata"], dict)
+        self.assertEqual(signals.item(0, "symbol"), "000001")
+        self.assertEqual(signals.item(0, "source"), "model_ridge")
+        self.assertIsInstance(signals.item(0, "metadata"), dict)
 
     def test_scores_to_signals_selects_daily_top_n_with_equal_weights(self):
         scores = pd.DataFrame(
@@ -232,9 +269,9 @@ class TrainingValidationTests(unittest.TestCase):
 
         signals = scores_to_signals(scores, source="ridge", top_n=2)
 
-        self.assertEqual(signals["symbol"].tolist(), ["000002", "000003"])
-        self.assertEqual(signals["weight"].tolist(), [0.5, 0.5])
-        self.assertEqual(signals.loc[0, "metadata"]["rank_position"], 1)
+        self.assertEqual(signals["symbol"].to_list(), ["000002", "000003"])
+        self.assertEqual(signals["weight"].to_list(), [0.5, 0.5])
+        self.assertEqual(signals.item(0, "metadata")["rank_position"], 1)
 
 
 if __name__ == "__main__":

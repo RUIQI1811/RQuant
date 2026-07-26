@@ -611,6 +611,8 @@ def cmd_signal_backtest(args: argparse.Namespace) -> None:
         initial_cash=args.initial_cash,
         hold_days=args.hold_days,
         commission_wan=args.commission_wan,
+        stamp_tax_rate=args.stamp_tax_rate,
+        transfer_fee_rate=args.transfer_fee_rate,
         max_positions=args.max_positions,
         lot_size=args.lot_size,
         show_progress=not args.no_progress,
@@ -665,6 +667,70 @@ def cmd_fetch_data(args: argparse.Namespace) -> None:
     )
 
 
+def cmd_fetch_context(args: argparse.Namespace) -> None:
+    from market.fetch_context import run_from_args
+
+    result = run_from_args(args)
+    print("\nResearch context fetch complete")
+    print(f"date range: {result['start']} to {result['end']}")
+    print(f"requested dates: {result['requested_date_count']}")
+    print(f"fetched dates: {result['fetched_date_count']}")
+    print(f"reused dates: {result['reused_date_count']}")
+    print(f"workers: {result['worker_count']}")
+    print(f"output: {result['output_dir']}")
+    print(f"manifest: {result['manifest_path']}")
+    if not result["ok"]:
+        print(f"failed dates: {result['failed_dates']}")
+        raise SystemExit(2)
+    return WorkflowResult.from_mapping(
+        {
+            "result": result,
+            "output_dir": Path(result["output_dir"]),
+            "manifest_path": Path(result["manifest_path"]),
+        }
+    )
+
+
+def cmd_fetch_benchmark(args: argparse.Namespace) -> None:
+    from market.fetch_benchmark import run_from_args
+
+    result = run_from_args(args)
+    print("\nBenchmark index fetch complete")
+    print(f"index: {result['index_code']}")
+    print(f"date range: {result['start']} to {result['end']}")
+    print(f"rows: {result['row_count']}")
+    print(f"reused: {result['reused']}")
+    print(f"output: {result['output_file']}")
+    print(f"manifest: {result['manifest_path']}")
+    if not result["ok"]:
+        print(f"error: {result['error']}")
+        raise SystemExit(2)
+    return WorkflowResult.from_mapping(
+        {
+            "result": result,
+            "output_file": Path(result["output_file"]),
+            "manifest_path": Path(result["manifest_path"]),
+        }
+    )
+
+
+def cmd_build_style_factors(args: argparse.Namespace) -> None:
+    from factors.style_returns import run_from_args
+
+    result = run_from_args(args)
+    print("\nMKT/SMB/HML construction complete")
+    print(f"rows: {result['row_count']}")
+    print(f"output: {result['output_file']}")
+    print(f"manifest: {result['manifest_path']}")
+    return WorkflowResult.from_mapping(
+        {
+            "result": result,
+            "output_file": Path(result["output_file"]),
+            "manifest_path": Path(result["manifest_path"]),
+        }
+    )
+
+
 def cmd_factor_test(args: argparse.Namespace) -> None:
     from scripts.test_factor import run_from_args
 
@@ -680,6 +746,29 @@ def cmd_factor_batch(args: argparse.Namespace) -> None:
     exit_code = run_from_args(args)
     if exit_code:
         raise SystemExit(exit_code)
+
+
+def cmd_factor_correlation(args: argparse.Namespace) -> None:
+    from scripts.factor_correlation import run_from_args
+
+    exit_code = run_from_args(args)
+    if exit_code:
+        raise SystemExit(exit_code)
+    return WorkflowResult.from_mapping(
+        {"result": {"factors": list(args.factors)}, "output_dir": Path(args.output)}
+    )
+
+
+def cmd_factor_run_all(args: argparse.Namespace) -> WorkflowResult:
+    from reports.factor_research_pipeline import run_from_args
+
+    outputs = run_from_args(args)
+    print("\nFactor research run-all complete")
+    for name, path in outputs.items():
+        if name == "result":
+            continue
+        print(f"{name}: {path}")
+    return outputs
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -1085,6 +1174,8 @@ def build_parser(*, prog: str = "scripts.quant_cli") -> argparse.ArgumentParser:
     p.add_argument("--hold-days", type=_positive_int, default=20)
     p.add_argument("--initial-cash", type=_positive_float, default=10000000.0)
     p.add_argument("--commission-wan", type=_non_negative_float, default=0.8)
+    p.add_argument("--stamp-tax-rate", type=_non_negative_float, default=0.0005)
+    p.add_argument("--transfer-fee-rate", type=_non_negative_float, default=0.00001)
     p.add_argument("--max-positions", type=_positive_int, default=10)
     p.add_argument("--lot-size", type=_positive_int, default=100)
     p.add_argument("--no-progress", action="store_true")
@@ -1123,6 +1214,51 @@ def build_parser(*, prog: str = "scripts.quant_cli") -> argparse.ArgumentParser:
         help="Reuse completed symbols from a signature-matching manifest",
     )
 
+    p = sub.add_parser(
+        "fetch-context",
+        help="Fetch point-in-time Tushare daily_basic market-cap context",
+    )
+    p.add_argument("--start", required=True, help="First date, e.g. 20180101")
+    p.add_argument("--end", default=None, help="Last date; defaults to today")
+    p.add_argument("--out", default="data/context/daily_basic")
+    p.add_argument("--manifest", default=None)
+    p.add_argument("--resume", action="store_true")
+    p.add_argument("--max-requests-per-minute", type=_non_negative_int, default=180)
+    p.add_argument("--workers", type=_positive_int, default=8)
+    p.add_argument(
+        "--max-dates",
+        type=_positive_int,
+        default=None,
+        help="Smoke-test only: fetch the first N open dates",
+    )
+
+    p = sub.add_parser(
+        "build-style-factors",
+        help="Build lagged-characteristic daily MKT/SMB/HML for GTJA030",
+    )
+    p.add_argument("--data", default="data/raw")
+    p.add_argument("--context", default="data/context/daily_basic")
+    p.add_argument("--out", default="data/context/style_factors.csv")
+    p.add_argument("--manifest", default=None)
+    p.add_argument("--start", default=None)
+    p.add_argument("--end", default=None)
+    p.add_argument("--size-quantile", type=float, default=0.5)
+    p.add_argument("--value-low-quantile", type=float, default=0.3)
+    p.add_argument("--value-high-quantile", type=float, default=0.7)
+    p.add_argument("--min-stocks-per-portfolio", type=_positive_int, default=5)
+    p.add_argument("--max-symbols", type=_positive_int, default=None)
+
+    p = sub.add_parser(
+        "fetch-benchmark",
+        help="Fetch a Tushare index_daily benchmark for market-related GTJA factors",
+    )
+    p.add_argument("--start", required=True, help="First date, e.g. 20180101")
+    p.add_argument("--end", default=None, help="Last date; defaults to today")
+    p.add_argument("--index-code", default="000300.SH", help="Tushare index code")
+    p.add_argument("--out", default="data/context/benchmark_000300.csv")
+    p.add_argument("--manifest", default=None)
+    p.add_argument("--resume", action="store_true")
+
     from scripts.test_factor import add_arguments as add_factor_test_arguments
 
     p = sub.add_parser("factor-test", help="Run one long-only FactorTester report")
@@ -1135,6 +1271,22 @@ def build_parser(*, prog: str = "scripts.quant_cli") -> argparse.ArgumentParser:
         help="Run resumable lifecycle-aware Alpha101 or GTJA191 factor batches",
     )
     add_factor_batch_arguments(p)
+
+    from scripts.factor_correlation import add_arguments as add_factor_correlation_arguments
+
+    p = sub.add_parser(
+        "factor-correlation",
+        help="Build factor correlation matrices and an auditable |Spearman| deduplication list",
+    )
+    add_factor_correlation_arguments(p)
+
+    from reports.factor_research_pipeline import add_arguments as add_factor_run_all_arguments
+
+    p = sub.add_parser(
+        "factor-run-all",
+        help="Run factor evaluation, correlation deduplication, and 3y-to-1y long-only ML",
+    )
+    add_factor_run_all_arguments(p)
 
     p = sub.add_parser(
         "doctor",
@@ -1171,8 +1323,13 @@ _COMMAND_HANDLERS: dict[str, Callable[[argparse.Namespace], object]] = {
     "signal-backtest": cmd_signal_backtest,
     "make-ml-dataset": cmd_make_ml_dataset,
     "fetch-data": cmd_fetch_data,
+    "fetch-context": cmd_fetch_context,
+    "fetch-benchmark": cmd_fetch_benchmark,
+    "build-style-factors": cmd_build_style_factors,
     "factor-test": cmd_factor_test,
     "factor-batch": cmd_factor_batch,
+    "factor-correlation": cmd_factor_correlation,
+    "factor-run-all": cmd_factor_run_all,
     "doctor": cmd_doctor,
 }
 

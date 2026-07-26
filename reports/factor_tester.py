@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -10,6 +12,8 @@ import pandas as pd
 
 from domain.factors import FactorEvaluationResult
 
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_FORWARD_WINDOWS = (1, 5, 10, 20)
 DEFAULT_QUANTILES = (0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99)
@@ -57,6 +61,12 @@ class FactorTesterConfig:
     stamp_tax_rate: float = 0.0005
     oos_start_date: Optional[str] = None
     oos_fraction: float = 0.3
+    market_cap_groups: int = 3
+    market_regime_col: Optional[str] = "market_regime"
+    market_regime_lookback_days: int = 60
+    market_regime_min_periods: int = 20
+    bull_return_threshold: float = 0.10
+    bear_return_threshold: float = -0.10
 
     def __post_init__(self) -> None:
         if self.factor_lag_days < 1:
@@ -73,6 +83,16 @@ class FactorTesterConfig:
             raise ValueError("trading cost rates must be non-negative")
         if not 0.0 < self.oos_fraction < 1.0:
             raise ValueError("oos_fraction must be between 0 and 1")
+        if self.market_cap_groups < 2:
+            raise ValueError("market_cap_groups must be at least 2")
+        if self.market_regime_lookback_days <= 0:
+            raise ValueError("market_regime_lookback_days must be positive")
+        if not 1 <= self.market_regime_min_periods <= self.market_regime_lookback_days:
+            raise ValueError(
+                "market_regime_min_periods must be between 1 and market_regime_lookback_days"
+            )
+        if self.bear_return_threshold >= self.bull_return_threshold:
+            raise ValueError("bear_return_threshold must be below bull_return_threshold")
 
 
 @dataclass
@@ -194,6 +214,7 @@ class FactorTester:
         self.config = config or FactorTesterConfig()
         self.data: Optional[pd.DataFrame] = None
         self.valuation_data: Optional[pd.DataFrame] = None
+        self._valuation_by_date_cache: Optional[dict[pd.Timestamp, pd.DataFrame]] = None
         self.filter_availability: dict[str, bool] = {}
 
     def prepare_data(self) -> pd.DataFrame:
@@ -323,6 +344,8 @@ class FactorTester:
             ]
         ].any(axis=1)
 
+        df = self._attach_market_regime(df)
+
         self.filter_availability = {
             "tradeable": tradeable_available,
             "suspended": suspended_available,
@@ -333,6 +356,7 @@ class FactorTester:
             "liquidity": liquidity_available,
             "industry": bool(cfg.industry_col and cfg.industry_col in df.columns),
             "market_cap": bool(cfg.market_cap_col and cfg.market_cap_col in df.columns),
+            "market_regime": bool(df["_market_regime"].notna().any()),
         }
 
         df["factor_raw"] = df[cfg.factor_col]
@@ -379,15 +403,36 @@ class FactorTester:
 
     def run_all(self) -> FactorEvaluationResult:
         """Run all factor tests and return report tables keyed by report name."""
+        started_at = time.monotonic()
+        LOGGER.info("factor %s: preparing evaluation data", self.factor_name)
         df = self._prepared()
+        LOGGER.info(
+            "factor %s: prepared %d rows in %.1fs",
+            self.factor_name,
+            len(df),
+            time.monotonic() - started_at,
+        )
         coverage, coverage_summary = self.coverage_test()
         distribution, distribution_summary = self.distribution_test()
         ic, ic_summary = self.ic_test()
+        market_cap_ic, market_cap_ic_summary = self.market_cap_ic_test()
+        stage_started_at = time.monotonic()
+        LOGGER.info("factor %s: computing industry IC", self.factor_name)
+        industry_ic, industry_ic_summary = self.industry_ic_test()
+        LOGGER.info(
+            "factor %s: industry IC completed in %.1fs",
+            self.factor_name,
+            time.monotonic() - stage_started_at,
+        )
+        market_regime_ic, market_regime_ic_summary = self.market_regime_ic_test(ic)
+        annual_ic = self.annual_ic_test(ic)
         neutralized_ic, neutralized_ic_summary = self.neutralized_ic_test()
         group_return, group_summary = self.group_return_test()
         top_n_return, top_n_summary = self.top_n_return_test()
         tradable_top_n = self.tradable_top_n_test()
         tradable_top_quantile = self.tradable_top_quantile_test()
+        tradable_bottom_n = self.tradable_bottom_n_test()
+        tradable_bottom_quantile = self.tradable_bottom_quantile_test()
         stat_long_short = self.long_short_test()
         tradable_long_short = self.tradable_long_short_test()
         turnover = self.turnover_test()
@@ -400,11 +445,24 @@ class FactorTester:
         top_n_return = self._add_sample_split(top_n_return, oos_start)
         tradable_top_n = self._add_sample_split(tradable_top_n, oos_start)
         tradable_top_quantile = self._add_sample_split(tradable_top_quantile, oos_start)
+        tradable_bottom_n = self._add_sample_split(tradable_bottom_n, oos_start)
+        tradable_bottom_quantile = self._add_sample_split(tradable_bottom_quantile, oos_start)
         stat_long_short = self._add_sample_split(stat_long_short, oos_start)
         tradable_long_short = self._add_sample_split(tradable_long_short, oos_start)
         annual_performance = self.annual_performance_test(
             stat_long_short,
             tradable_long_short,
+        )
+        annual_long_only = self.annual_long_only_performance_test(
+            tradable_top_n=tradable_top_n,
+            tradable_top_quantile=tradable_top_quantile,
+            tradable_bottom_n=tradable_bottom_n,
+            tradable_bottom_quantile=tradable_bottom_quantile,
+        )
+        horizon_effectiveness = self.horizon_effectiveness_test(
+            ic_summary=ic_summary,
+            tradable_top_quantile=tradable_top_quantile,
+            tradable_bottom_quantile=tradable_bottom_quantile,
         )
         sample_performance = self.sample_performance_test(
             ic=ic,
@@ -414,6 +472,11 @@ class FactorTester:
             stat_long_short=stat_long_short,
             tradable_long_short=tradable_long_short,
             oos_start=oos_start,
+        )
+        LOGGER.info(
+            "factor %s: all evaluation stages completed in %.1fs",
+            self.factor_name,
+            time.monotonic() - started_at,
         )
 
         summary = self._build_summary(
@@ -439,6 +502,13 @@ class FactorTester:
             "ic": ic[[self.config.date_col, "window", "ic", "sample"]],
             "rank_ic": rank_ic,
             "ic_summary": ic_summary,
+            "market_cap_ic": market_cap_ic,
+            "market_cap_ic_summary": market_cap_ic_summary,
+            "industry_ic": industry_ic,
+            "industry_ic_summary": industry_ic_summary,
+            "market_regime_ic": market_regime_ic,
+            "market_regime_ic_summary": market_regime_ic_summary,
+            "annual_ic": annual_ic,
             "neutralized_ic": neutralized_ic,
             "neutralized_ic_summary": neutralized_ic_summary,
             "group_return": group_return,
@@ -447,6 +517,8 @@ class FactorTester:
             "top_n_summary": top_n_summary,
             "tradable_top_n": tradable_top_n,
             "tradable_top_quantile": tradable_top_quantile,
+            "tradable_bottom_n": tradable_bottom_n,
+            "tradable_bottom_quantile": tradable_bottom_quantile,
             "long_short": stat_long_short,
             "stat_long_short": stat_long_short,
             "tradable_long_short": tradable_long_short,
@@ -455,6 +527,8 @@ class FactorTester:
             "universe_filter": universe_filter,
             "filter_status": filter_status,
             "annual_performance": annual_performance,
+            "annual_long_only": annual_long_only,
+            "horizon_effectiveness": horizon_effectiveness,
             "sample_performance": sample_performance,
         })
 
@@ -471,6 +545,13 @@ class FactorTester:
             "ic": "ic.csv",
             "rank_ic": "rank_ic.csv",
             "ic_summary": "ic_summary.csv",
+            "market_cap_ic": "market_cap_ic.csv",
+            "market_cap_ic_summary": "market_cap_ic_summary.csv",
+            "industry_ic": "industry_ic.csv",
+            "industry_ic_summary": "industry_ic_summary.csv",
+            "market_regime_ic": "market_regime_ic.csv",
+            "market_regime_ic_summary": "market_regime_ic_summary.csv",
+            "annual_ic": "annual_ic.csv",
             "neutralized_ic": "neutralized_ic.csv",
             "neutralized_ic_summary": "neutralized_ic_summary.csv",
             "group_return": "group_return.csv",
@@ -479,6 +560,8 @@ class FactorTester:
             "top_n_summary": "top_n_summary.csv",
             "tradable_top_n": "tradable_top_n.csv",
             "tradable_top_quantile": "tradable_top_quantile.csv",
+            "tradable_bottom_n": "tradable_bottom_n.csv",
+            "tradable_bottom_quantile": "tradable_bottom_quantile.csv",
             "long_short": "long_short.csv",
             "stat_long_short": "stat_long_short.csv",
             "tradable_long_short": "tradable_long_short.csv",
@@ -487,6 +570,8 @@ class FactorTester:
             "universe_filter": "universe_filter.csv",
             "filter_status": "filter_status.csv",
             "annual_performance": "annual_performance.csv",
+            "annual_long_only": "annual_long_only.csv",
+            "horizon_effectiveness": "horizon_effectiveness.csv",
             "sample_performance": "sample_performance.csv",
         }
         for key, filename in file_map.items():
@@ -614,6 +699,288 @@ class FactorTester:
                 }
             )
         return ic_df, pd.DataFrame(summary_rows)
+
+    def market_cap_ic_test(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Compute IC independently inside point-in-time market-cap buckets."""
+        df = self._prepared()
+        cfg = self.config
+        columns = [
+            cfg.date_col,
+            "window",
+            "market_cap_bucket",
+            "market_cap_bucket_label",
+            "ic",
+            "rank_ic",
+            "count",
+        ]
+        if "_market_cap_lagged" not in df.columns:
+            return pd.DataFrame(columns=columns), pd.DataFrame()
+
+        rows: list[dict[str, Any]] = []
+        for window in cfg.forward_return_windows:
+            ret_col = self._return_col(window)
+            for date, daily in df.groupby(cfg.date_col):
+                valid = daily[
+                    ["factor_processed", ret_col, "_market_cap_lagged"]
+                ].dropna().copy()
+                if len(valid) < cfg.market_cap_groups * cfg.min_periods:
+                    continue
+                valid["market_cap_bucket"] = self._assign_groups(
+                    valid["_market_cap_lagged"],
+                    cfg.market_cap_groups,
+                )
+                for bucket, part in valid.dropna(subset=["market_cap_bucket"]).groupby(
+                    "market_cap_bucket"
+                ):
+                    ic, rank_ic = self._cross_sectional_ic(part, ret_col)
+                    rows.append(
+                        {
+                            cfg.date_col: date,
+                            "window": int(window),
+                            "market_cap_bucket": int(bucket),
+                            "market_cap_bucket_label": self._market_cap_bucket_label(
+                                int(bucket)
+                            ),
+                            "ic": ic,
+                            "rank_ic": rank_ic,
+                            "count": int(len(part)),
+                        }
+                    )
+        result = pd.DataFrame(rows, columns=columns)
+        return result, self._summarize_segmented_ic(
+            result,
+            ["window", "market_cap_bucket", "market_cap_bucket_label"],
+        )
+
+    def industry_ic_test(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Compute IC independently inside each point-in-time industry."""
+        df = self._prepared()
+        cfg = self.config
+        columns = [cfg.date_col, "window", "industry", "ic", "rank_ic", "count"]
+        if not cfg.industry_col or cfg.industry_col not in df.columns:
+            return pd.DataFrame(columns=columns), pd.DataFrame()
+
+        group_keys = (
+            df[[cfg.date_col, cfg.industry_col]]
+            .dropna()
+            .drop_duplicates()
+            .sort_values([cfg.date_col, cfg.industry_col])
+        )
+        frames: list[pd.DataFrame] = []
+        for window in cfg.forward_return_windows:
+            ret_col = self._return_col(window)
+            grouped = self._grouped_ic(
+                df,
+                group_cols=(cfg.date_col, cfg.industry_col),
+                return_col=ret_col,
+            )
+            grouped = group_keys.merge(
+                grouped,
+                on=[cfg.date_col, cfg.industry_col],
+                how="left",
+                validate="one_to_one",
+            )
+            grouped["count"] = grouped["count"].fillna(0).astype("int64")
+            grouped = grouped.rename(columns={cfg.industry_col: "industry"})
+            grouped.insert(1, "window", int(window))
+            frames.append(grouped)
+        result = (
+            pd.concat(frames, ignore_index=True)[columns]
+            if frames
+            else pd.DataFrame(columns=columns)
+        )
+        return result, self._summarize_segmented_ic(
+            result,
+            ["window", "industry"],
+        )
+
+    def _grouped_ic(
+        self,
+        frame: pd.DataFrame,
+        *,
+        group_cols: Sequence[str],
+        return_col: str,
+    ) -> pd.DataFrame:
+        """Vectorized Pearson and Spearman correlations for many small groups."""
+
+        value_cols = ["factor_processed", return_col]
+        valid = frame[[*group_cols, *value_cols]].replace(
+            [np.inf, -np.inf], np.nan
+        ).dropna()
+        output_cols = [*group_cols, "ic", "rank_ic", "count"]
+        if valid.empty:
+            return pd.DataFrame(columns=output_cols)
+
+        keys = pd.MultiIndex.from_frame(valid[list(group_cols)], names=group_cols)
+        codes, unique_keys = pd.factorize(keys, sort=False)
+        group_count = len(unique_keys)
+        x = valid["factor_processed"].to_numpy(dtype="float64", copy=False)
+        y = valid[return_col].to_numpy(dtype="float64", copy=False)
+
+        def correlations(left: np.ndarray, right: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            count = np.bincount(codes, minlength=group_count).astype("int64")
+            count_float = count.astype("float64")
+            left_sum = np.bincount(codes, weights=left, minlength=group_count)
+            right_sum = np.bincount(codes, weights=right, minlength=group_count)
+            left_square_sum = np.bincount(
+                codes, weights=left * left, minlength=group_count
+            )
+            right_square_sum = np.bincount(
+                codes, weights=right * right, minlength=group_count
+            )
+            cross_sum = np.bincount(
+                codes, weights=left * right, minlength=group_count
+            )
+            numerator = count_float * cross_sum - left_sum * right_sum
+            left_variance = np.maximum(
+                count_float * left_square_sum - left_sum * left_sum,
+                0.0,
+            )
+            right_variance = np.maximum(
+                count_float * right_square_sum - right_sum * right_sum,
+                0.0,
+            )
+            denominator = np.sqrt(left_variance * right_variance)
+            result = np.full(group_count, np.nan, dtype="float64")
+            eligible = (count >= self.config.min_periods) & (denominator > 0.0)
+            result[eligible] = numerator[eligible] / denominator[eligible]
+            result[eligible] = np.clip(result[eligible], -1.0, 1.0)
+            return result, count
+
+        pearson, counts = correlations(x, y)
+        ranked_x = (
+            pd.Series(x, copy=False).groupby(codes, sort=False).rank(method="average")
+        ).to_numpy(dtype="float64", copy=False)
+        ranked_y = (
+            pd.Series(y, copy=False).groupby(codes, sort=False).rank(method="average")
+        ).to_numpy(dtype="float64", copy=False)
+        spearman, _ = correlations(ranked_x, ranked_y)
+
+        result = unique_keys.to_frame(index=False)
+        result.columns = list(group_cols)
+        result["ic"] = pearson
+        result["rank_ic"] = spearman
+        result["count"] = counts
+        return result[output_cols]
+
+    def market_regime_ic_test(
+        self,
+        ic: Optional[pd.DataFrame] = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Attach bull/bear/sideways labels to daily IC and summarize by regime."""
+        df = self._prepared()
+        cfg = self.config
+        columns = [
+            cfg.date_col,
+            "window",
+            "market_regime",
+            "market_trailing_return",
+            "ic",
+            "rank_ic",
+        ]
+        if not df["_market_regime"].notna().any():
+            return pd.DataFrame(columns=columns), pd.DataFrame()
+        inconsistent = df.groupby(cfg.date_col)["_market_regime"].nunique(dropna=True)
+        if bool((inconsistent > 1).any()):
+            raise ValueError("market regime must have at most one value per trading date")
+        daily_regime = (
+            df[[cfg.date_col, "_market_regime", "_market_trailing_return"]]
+            .drop_duplicates(cfg.date_col, keep="last")
+            .rename(
+                columns={
+                    "_market_regime": "market_regime",
+                    "_market_trailing_return": "market_trailing_return",
+                }
+            )
+        )
+        ic_frame = ic.copy() if ic is not None else self.ic_test()[0]
+        result = ic_frame.merge(daily_regime, on=cfg.date_col, how="left")
+        result = result[columns].dropna(subset=["ic", "rank_ic"], how="all")
+        return result, self._summarize_segmented_ic(
+            result.dropna(subset=["market_regime"]),
+            ["window", "market_regime"],
+        )
+
+    def annual_ic_test(self, ic: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """Summarize IC direction and stability for each calendar year."""
+        cfg = self.config
+        frame = ic.copy() if ic is not None else self.ic_test()[0]
+        if frame.empty:
+            return pd.DataFrame()
+        frame["year"] = pd.to_datetime(frame[cfg.date_col]).dt.year
+        return self._summarize_segmented_ic(frame, ["window", "year"])
+
+    def _cross_sectional_ic(
+        self,
+        pair: pd.DataFrame,
+        return_col: str,
+    ) -> tuple[float, float]:
+        cfg = self.config
+        if (
+            len(pair) < cfg.min_periods
+            or pair["factor_processed"].nunique() < 2
+            or pair[return_col].nunique() < 2
+        ):
+            return np.nan, np.nan
+        return (
+            pair["factor_processed"].corr(pair[return_col], method="pearson"),
+            pair["factor_processed"].corr(pair[return_col], method="spearman"),
+        )
+
+    @staticmethod
+    def _summarize_segmented_ic(
+        frame: pd.DataFrame,
+        group_cols: Sequence[str],
+    ) -> pd.DataFrame:
+        columns = [
+            *group_cols,
+            "ic_mean",
+            "ic_std",
+            "icir",
+            "ic_win_rate",
+            "rank_ic_mean",
+            "rank_ic_std",
+            "rank_icir",
+            "rank_ic_win_rate",
+            "observation_count",
+        ]
+        if frame.empty:
+            return pd.DataFrame(columns=columns)
+        rows: list[dict[str, Any]] = []
+        for keys, part in frame.groupby(list(group_cols), dropna=False):
+            key_values = keys if isinstance(keys, tuple) else (keys,)
+            ic_values = pd.to_numeric(part["ic"], errors="coerce").dropna()
+            rank_values = pd.to_numeric(part["rank_ic"], errors="coerce").dropna()
+            ic_mean = float(ic_values.mean()) if not ic_values.empty else np.nan
+            ic_std = float(ic_values.std(ddof=1)) if len(ic_values) > 1 else np.nan
+            rank_mean = float(rank_values.mean()) if not rank_values.empty else np.nan
+            rank_std = float(rank_values.std(ddof=1)) if len(rank_values) > 1 else np.nan
+            row = dict(zip(group_cols, key_values))
+            row.update(
+                {
+                    "ic_mean": ic_mean,
+                    "ic_std": ic_std,
+                    "icir": _icir(ic_mean, ic_std),
+                    "ic_win_rate": float((ic_values > 0).mean())
+                    if not ic_values.empty
+                    else np.nan,
+                    "rank_ic_mean": rank_mean,
+                    "rank_ic_std": rank_std,
+                    "rank_icir": _icir(rank_mean, rank_std),
+                    "rank_ic_win_rate": float((rank_values > 0).mean())
+                    if not rank_values.empty
+                    else np.nan,
+                    "observation_count": int(rank_values.count()),
+                }
+            )
+            rows.append(row)
+        return pd.DataFrame(rows, columns=columns)
+
+    def _market_cap_bucket_label(self, bucket: int) -> str:
+        groups = self.config.market_cap_groups
+        if groups == 3:
+            return {1: "small", 2: "mid", 3: "large"}[bucket]
+        return f"cap_q{bucket}_of_{groups}"
 
     def group_return_test(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """Group stocks by daily factor quantile and compute average forward returns."""
@@ -750,6 +1117,26 @@ class FactorTester:
             selector=self._select_top_quantile_symbols,
         )
 
+    def tradable_bottom_n_test(self) -> pd.DataFrame:
+        """Build daily long-only tradable NAVs for fixed lowest-factor buckets."""
+        cfg = self.config
+        return self._tradable_long_only_test(
+            bucket_name="bottom_n",
+            bucket_values=tuple(dict.fromkeys(int(value) for value in cfg.top_n_counts)),
+            nav_col="tradable_bottom_n_cum_nav",
+            selector=self._select_bottom_n_symbols,
+        )
+
+    def tradable_bottom_quantile_test(self) -> pd.DataFrame:
+        """Build a daily long-only tradable NAV for the lowest factor quantile."""
+        cfg = self.config
+        return self._tradable_long_only_test(
+            bucket_name="bottom_quantile",
+            bucket_values=(1.0 / int(cfg.groups),),
+            nav_col="tradable_bottom_quantile_cum_nav",
+            selector=self._select_bottom_quantile_symbols,
+        )
+
     def _tradable_long_only_test(
         self,
         *,
@@ -766,17 +1153,25 @@ class FactorTester:
                 f"('{cfg.close_col}') or daily return column ('{cfg.daily_return_col}')"
             )
 
+        selection_columns = [
+            cfg.date_col,
+            cfg.symbol_col,
+            "factor_processed",
+            "_eligible",
+            "_is_tradeable",
+            "_is_suspended",
+            "_is_limit_up",
+            "_is_limit_down",
+        ]
         state_by_date = {
-            pd.Timestamp(date): daily
-            for date, daily in df.groupby(cfg.date_col, sort=True)
+            pd.Timestamp(date): daily.drop_duplicates(
+                cfg.symbol_col, keep="last"
+            ).set_index(cfg.symbol_col)
+            for date, daily in df[selection_columns].groupby(cfg.date_col, sort=True)
         }
-        valuation_by_date = {
-            pd.Timestamp(date): daily.drop_duplicates(cfg.symbol_col, keep="last").set_index(
-                cfg.symbol_col
-            )
-            for date, daily in self.valuation_data.groupby(cfg.date_col, sort=True)
-        }
+        valuation_by_date = self._valuation_states_by_date()
         valuation_dates = sorted(valuation_by_date)
+        candidate_cache: dict[tuple[pd.Timestamp, int | float], tuple[str, ...]] = {}
         rows: list[dict[str, Any]] = []
         for window in cfg.forward_return_windows:
             holding_days = int(window)
@@ -794,6 +1189,18 @@ class FactorTester:
                     selected_count = 0
                     candidate_count = 0
                     if daily_selection is not None and len(active_cohorts) < holding_days:
+                        candidate_key = (signal_date, bucket_value)
+                        candidate_symbols = candidate_cache.get(candidate_key)
+                        if candidate_symbols is None:
+                            valid = (
+                                daily_selection[["factor_processed"]]
+                                .dropna()
+                                .reset_index()
+                            )
+                            candidate_symbols = tuple(
+                                str(symbol) for symbol in selector(valid, bucket_value)
+                            )
+                            candidate_cache[candidate_key] = candidate_symbols
                         (
                             cohort,
                             blocked_entries,
@@ -801,8 +1208,7 @@ class FactorTester:
                             candidate_count,
                         ) = self._build_long_only_cohort(
                             daily_selection,
-                            bucket_value=bucket_value,
-                            selector=selector,
+                            candidate_symbols=candidate_symbols,
                             holding_days=holding_days,
                         )
                         if cohort is not None:
@@ -871,38 +1277,35 @@ class FactorTester:
         metrics = []
         for keys, part in out.groupby(["window", bucket_name]):
             window, bucket_value = keys
-            returns = part["net_return"].dropna()
+            gross_returns = pd.to_numeric(part["gross_return"], errors="coerce").dropna()
+            net_returns = pd.to_numeric(part["net_return"], errors="coerce").dropna()
             nav_series = part[nav_col].dropna()
             metrics.append(
                 {
                     "window": int(window),
                     bucket_name: bucket_value,
-                    "annualized_return": _annualized_return(returns),
+                    "gross_period_return": (1.0 + gross_returns).prod() - 1.0,
+                    "gross_annualized_return": _annualized_return(gross_returns),
+                    "gross_sharpe": _sharpe(gross_returns),
+                    "net_period_return": (1.0 + net_returns).prod() - 1.0,
+                    "net_annualized_return": _annualized_return(net_returns),
+                    "net_sharpe": _sharpe(net_returns),
+                    "annualized_return": _annualized_return(net_returns),
                     "max_drawdown": _max_drawdown(nav_series),
-                    "sharpe": _sharpe(returns),
+                    "sharpe": _sharpe(net_returns),
                 }
             )
         return out.merge(pd.DataFrame(metrics), on=["window", bucket_name], how="left")
 
     def _build_long_only_cohort(
         self,
-        daily: pd.DataFrame,
+        state: pd.DataFrame,
         *,
-        bucket_value: int | float,
-        selector: Any,
+        candidate_symbols: Sequence[str],
         holding_days: int,
     ) -> tuple[Optional[_LongOnlyCohort], int, int, int]:
-        cfg = self.config
-        valid = (
-            daily[[cfg.symbol_col, "factor_processed"]]
-            .dropna()
-            .drop_duplicates(cfg.symbol_col, keep="last")
-            .copy()
-        )
-        if valid.empty:
+        if not candidate_symbols:
             return None, 0, 0, 0
-        candidate_symbols = tuple(str(symbol) for symbol in selector(valid, bucket_value))
-        state = daily.drop_duplicates(cfg.symbol_col, keep="last").set_index(cfg.symbol_col)
         long_symbols = tuple(
             symbol for symbol in candidate_symbols if self._can_enter(state, symbol, side="long")
         )
@@ -918,6 +1321,20 @@ class FactorTester:
             len(long_symbols),
             len(candidate_symbols),
         )
+
+    def _valuation_states_by_date(self) -> dict[pd.Timestamp, pd.DataFrame]:
+        if self._valuation_by_date_cache is not None:
+            return self._valuation_by_date_cache
+        if self.valuation_data is None:
+            return {}
+        cfg = self.config
+        self._valuation_by_date_cache = {
+            pd.Timestamp(date): daily.drop_duplicates(
+                cfg.symbol_col, keep="last"
+            ).set_index(cfg.symbol_col)
+            for date, daily in self.valuation_data.groupby(cfg.date_col, sort=True)
+        }
+        return self._valuation_by_date_cache
 
     def _select_top_n_symbols(self, valid: pd.DataFrame, top_n: int | float) -> tuple[str, ...]:
         cfg = self.config
@@ -939,6 +1356,32 @@ class FactorTester:
         grouped = valid.copy()
         grouped["group"] = self._assign_groups(grouped["factor_processed"], cfg.groups)
         selected = grouped.loc[grouped["group"] == cfg.groups]
+        return tuple(selected[cfg.symbol_col].astype(str))
+
+    def _select_bottom_n_symbols(
+        self,
+        valid: pd.DataFrame,
+        bottom_n: int | float,
+    ) -> tuple[str, ...]:
+        cfg = self.config
+        selected = valid.sort_values(
+            ["factor_processed", cfg.symbol_col],
+            ascending=[True, True],
+            kind="mergesort",
+        ).head(int(bottom_n))
+        return tuple(selected[cfg.symbol_col].astype(str))
+
+    def _select_bottom_quantile_symbols(
+        self,
+        valid: pd.DataFrame,
+        _: int | float,
+    ) -> tuple[str, ...]:
+        cfg = self.config
+        if len(valid) < cfg.groups:
+            return ()
+        grouped = valid.copy()
+        grouped["group"] = self._assign_groups(grouped["factor_processed"], cfg.groups)
+        selected = grouped.loc[grouped["group"] == 1]
         return tuple(selected[cfg.symbol_col].astype(str))
 
     def long_short_test(self) -> pd.DataFrame:
@@ -1004,12 +1447,7 @@ class FactorTester:
             pd.Timestamp(date): daily
             for date, daily in df.groupby(cfg.date_col, sort=True)
         }
-        valuation_by_date = {
-            pd.Timestamp(date): daily.drop_duplicates(cfg.symbol_col, keep="last").set_index(
-                cfg.symbol_col
-            )
-            for date, daily in self.valuation_data.groupby(cfg.date_col, sort=True)
-        }
+        valuation_by_date = self._valuation_states_by_date()
         valuation_dates = sorted(valuation_by_date)
         rows = []
         for window in cfg.forward_return_windows:
@@ -1320,6 +1758,7 @@ class FactorTester:
             "liquidity": cfg.min_liquidity > 0,
             "industry": True,
             "market_cap": True,
+            "market_regime": True,
         }
         status = pd.DataFrame(
             [
@@ -1374,6 +1813,146 @@ class FactorTester:
                         "sharpe": _sharpe(returns, return_horizon_days=horizon),
                     }
                 )
+        return pd.DataFrame(rows)
+
+    def annual_long_only_performance_test(
+        self,
+        *,
+        tradable_top_n: pd.DataFrame,
+        tradable_top_quantile: pd.DataFrame,
+        tradable_bottom_n: pd.DataFrame,
+        tradable_bottom_quantile: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Report annual gross and after-cost results for both long-only directions."""
+        cfg = self.config
+        rows: list[dict[str, Any]] = []
+        definitions = (
+            ("top_n", "high_factor", tradable_top_n, "top_n"),
+            ("top_quantile", "high_factor", tradable_top_quantile, "top_quantile"),
+            ("bottom_n", "low_factor", tradable_bottom_n, "bottom_n"),
+            (
+                "bottom_quantile",
+                "low_factor",
+                tradable_bottom_quantile,
+                "bottom_quantile",
+            ),
+        )
+        for selection, side, frame, bucket_col in definitions:
+            if frame.empty:
+                continue
+            work = frame.copy()
+            work["year"] = pd.to_datetime(work[cfg.date_col]).dt.year
+            for (window, bucket, year), part in work.groupby(
+                ["window", bucket_col, "year"]
+            ):
+                gross = pd.to_numeric(part["gross_return"], errors="coerce").dropna()
+                net = pd.to_numeric(part["net_return"], errors="coerce").dropna()
+                if gross.empty and net.empty:
+                    continue
+                rows.append(
+                    {
+                        "selection": selection,
+                        "side": side,
+                        "window": int(window),
+                        "bucket": bucket,
+                        "year": int(year),
+                        "observation_count": int(max(gross.count(), net.count())),
+                        "gross_period_return": (1.0 + gross).prod() - 1.0
+                        if not gross.empty
+                        else np.nan,
+                        "gross_annualized_return": _annualized_return(gross),
+                        "gross_sharpe": _sharpe(gross),
+                        "net_period_return": (1.0 + net).prod() - 1.0
+                        if not net.empty
+                        else np.nan,
+                        "net_annualized_return": _annualized_return(net),
+                        "net_sharpe": _sharpe(net),
+                        "transaction_cost": float(
+                            pd.to_numeric(
+                                part["transaction_cost"], errors="coerce"
+                            ).fillna(0.0).sum()
+                        ),
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def horizon_effectiveness_test(
+        self,
+        *,
+        ic_summary: pd.DataFrame,
+        tradable_top_quantile: pd.DataFrame,
+        tradable_bottom_quantile: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Compare high/low long-only profitability for every research horizon."""
+        rows: list[dict[str, Any]] = []
+        for window in self.config.forward_return_windows:
+            ic_part = ic_summary.loc[ic_summary["window"].eq(int(window))]
+            rank_ic_mean = (
+                float(ic_part.iloc[0]["rank_ic_mean"])
+                if not ic_part.empty and pd.notna(ic_part.iloc[0]["rank_ic_mean"])
+                else np.nan
+            )
+            if pd.isna(rank_ic_mean) or abs(rank_ic_mean) < 1e-12:
+                direction = "flat"
+                preferred = "undetermined"
+            elif rank_ic_mean > 0:
+                direction = "positive"
+                preferred = "high_factor"
+            else:
+                direction = "negative"
+                preferred = "low_factor"
+
+            def metrics(frame: pd.DataFrame) -> dict[str, float]:
+                if frame.empty or "window" not in frame.columns:
+                    part = pd.DataFrame()
+                else:
+                    part = frame.loc[frame["window"].eq(int(window))]
+                if part.empty:
+                    return {
+                        "gross_annualized_return": np.nan,
+                        "gross_sharpe": np.nan,
+                        "net_annualized_return": np.nan,
+                        "net_sharpe": np.nan,
+                    }
+                first = part.iloc[0]
+                return {
+                    key: float(first[key]) if pd.notna(first.get(key)) else np.nan
+                    for key in (
+                        "gross_annualized_return",
+                        "gross_sharpe",
+                        "net_annualized_return",
+                        "net_sharpe",
+                    )
+                }
+
+            high = metrics(tradable_top_quantile)
+            low = metrics(tradable_bottom_quantile)
+            rows.append(
+                {
+                    "window": int(window),
+                    "rank_ic_mean": rank_ic_mean,
+                    "ic_direction": direction,
+                    "preferred_long_side": preferred,
+                    **{f"high_{key}": value for key, value in high.items()},
+                    **{f"low_{key}": value for key, value in low.items()},
+                    "high_profitable_before_cost": bool(
+                        pd.notna(high["gross_annualized_return"])
+                        and high["gross_annualized_return"] > 0
+                    ),
+                    "high_profitable_after_cost": bool(
+                        pd.notna(high["net_annualized_return"])
+                        and high["net_annualized_return"] > 0
+                    ),
+                    "low_profitable_before_cost": bool(
+                        pd.notna(low["gross_annualized_return"])
+                        and low["gross_annualized_return"] > 0
+                    ),
+                    "low_profitable_after_cost": bool(
+                        pd.notna(low["net_annualized_return"])
+                        and low["net_annualized_return"] > 0
+                    ),
+                }
+            )
         return pd.DataFrame(rows)
 
     def sample_performance_test(
@@ -1622,6 +2201,74 @@ class FactorTester:
                         }
                     )
         return pd.DataFrame(rows)
+
+    def _attach_market_regime(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Attach point-in-time bull/bear/sideways labels without future data."""
+        cfg = self.config
+        out = df.copy()
+        supplied = bool(cfg.market_regime_col and cfg.market_regime_col in out.columns)
+        if supplied and cfg.market_regime_col:
+            out["_market_regime"] = self._normalize_market_regime(
+                out[cfg.market_regime_col]
+            )
+            out["_market_trailing_return"] = np.nan
+            return out
+
+        if cfg.daily_return_col not in out.columns:
+            out["_market_regime"] = pd.Series(pd.NA, index=out.index, dtype="object")
+            out["_market_trailing_return"] = np.nan
+            return out
+
+        eligible = out.loc[out["_eligible"]].copy()
+        market_daily_return = (
+            pd.to_numeric(eligible[cfg.daily_return_col], errors="coerce")
+            .groupby(eligible[cfg.date_col])
+            .mean()
+            .sort_index()
+        )
+        trailing_return = (
+            (1.0 + market_daily_return.clip(lower=-0.999999))
+            .rolling(
+                cfg.market_regime_lookback_days,
+                min_periods=cfg.market_regime_min_periods,
+            )
+            .apply(np.prod, raw=True)
+            .sub(1.0)
+            .shift(1)
+        )
+        regime = pd.Series("sideways", index=trailing_return.index, dtype="object")
+        regime.loc[trailing_return >= cfg.bull_return_threshold] = "bull"
+        regime.loc[trailing_return <= cfg.bear_return_threshold] = "bear"
+        regime.loc[trailing_return.isna()] = pd.NA
+        out["_market_regime"] = out[cfg.date_col].map(regime)
+        out["_market_trailing_return"] = out[cfg.date_col].map(trailing_return)
+        return out
+
+    @staticmethod
+    def _normalize_market_regime(values: pd.Series) -> pd.Series:
+        aliases = {
+            "bull": "bull",
+            "bullish": "bull",
+            "牛": "bull",
+            "牛市": "bull",
+            "bear": "bear",
+            "bearish": "bear",
+            "熊": "bear",
+            "熊市": "bear",
+            "sideways": "sideways",
+            "range": "sideways",
+            "neutral": "sideways",
+            "震荡": "sideways",
+            "震荡市": "sideways",
+        }
+        normalized = values.astype("string").str.strip().str.lower().map(aliases)
+        unknown = values.notna() & normalized.isna()
+        if bool(unknown.any()):
+            invalid = sorted(values.loc[unknown].astype(str).unique())
+            raise ValueError(
+                "unknown market regime values: " + ", ".join(invalid)
+            )
+        return normalized.astype("object")
 
     def _ensure_forward_returns(self, df: pd.DataFrame) -> pd.DataFrame:
         cfg = self.config

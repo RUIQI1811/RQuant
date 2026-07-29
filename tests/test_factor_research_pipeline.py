@@ -118,6 +118,7 @@ class FactorResearchPipelineTests(unittest.TestCase):
 
             batch = commands[0].argv
             self.assertIn("--fail-fast", batch)
+            self.assertEqual(batch[batch.index("--profile") + 1], "core")
             correlation = commands[1].argv
             self.assertNotIn("--eligibility-col", correlation)
             self.assertEqual(

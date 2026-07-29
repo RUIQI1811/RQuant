@@ -447,8 +447,9 @@ python -m rquant factor-run-all --config config/factor_research_run_all.yaml --f
 
 流水线固定执行：
 
-1. 对配置中的全部周期生成 IC/Rank IC、方向、高低值两侧只做多毛收益与净收益、
-   扣费前后夏普、逐年收益、市值分档 IC、行业/板块 IC 和牛熊震荡 IC。
+1. 用 `evaluation.profile` 控制批量报告档位；默认 `core` 生成 IC/Rank IC、分布、
+   分组收益、中性化、市值/行业 IC、高值侧可交易多头、暴露和统计多空报告。
+   `full` 额外生成市场状态 IC、统计 TopN、低值侧、可交易多空和股票池逐日明细。
 2. 用批量排行榜中的同周期成本前夏普作为质量优先级，计算每日横截面
    Spearman/Pearson，两两 `|Spearman| >= 0.8` 聚类去重。
 3. `fit-multifactor` 直接读取 `deduplicated_factors.csv`，全部去重代表进入
@@ -456,9 +457,9 @@ python -m rquant factor-run-all --config config/factor_research_run_all.yaml --f
 4. 严格使用过去三个完整日历年训练、预测下一个完整日历年；每个模型分别运行
    零成本和实际成本的 A 股约束组合回测。
 
-这里“高值侧”和“低值侧”都表示买入该侧股票；不会卖空任何股票。因子阶段仍输出
-成本前/成本后报告供研究，但成本不参与 ML 特征准入。交易费用只在最终模型组合回测中
-用于判断模型能否盈利。统计型多空文件仍仅作诊断，不会进入 ML 或组合执行。
+`core` 的高值侧报告表示买入因子值较高的股票；不会卖空。未声明方向且 Rank IC
+为负的因子会标记为 `needs_full_direction_check`，不会在同一批样本中自动翻向。
+统计型多空文件仍仅作诊断，不会进入 ML 或组合执行。
 
 每个子命令都有自己的 `data/runs/<run-id>/run.json` 和 `run.log`。RunAll 自身只在
 `data/runs/` 保留轻量父运行记录，记录子命令、退出码和路径；不再生成
@@ -581,6 +582,17 @@ python -m rquant factor-test --factor custom_002 --data data/raw --metadata conf
 `(high + low + close) / 3` 作为 VWAP 回退值。
 
 ### Alpha101 批处理
+
+`factor-batch` 默认使用精简的 `core` 档位。它保留分布、分组收益、中性化 IC、
+市值 IC、行业 IC、暴露、统计多空以及高值侧可交易 TopN/Top Quantile；跳过市场状态
+IC、统计 TopN、低值侧可交易回测、可交易多空和逐日股票池明细。需要完整诊断时显式运行：
+
+```bash
+python -m rquant factor-batch --family alpha101 --profile full --data data/raw --factors all --output factor_report/alpha101_batch/full
+```
+
+profile 会写入批次 manifest、单因子运行元数据和恢复指纹，`core` 与 `full` 不会错误
+复用彼此的结果。`factor-test` 仍保持完整单因子诊断，不受批处理默认档位影响。
 
 查看因子生命周期状态：
 

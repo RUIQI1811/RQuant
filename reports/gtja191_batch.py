@@ -238,6 +238,8 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
             fingerprint=self.fingerprint,
             factor_statuses=self.leaderboard_factor_statuses,
             factor_categories=self.leaderboard_factor_categories,
+            profile=self.config.profile,
+            declared_directions=self.leaderboard_factor_directions,
         )
         _atomic_write_csv(self.output_dir / "leaderboard.csv", leaderboard)
         write_long_only_profitability_reports(self.output_dir, leaderboard)

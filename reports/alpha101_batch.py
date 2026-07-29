@@ -20,7 +20,12 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from reports.factor_tester import FactorTester, FactorTesterConfig, forward_return_col
+from reports.factor_tester import (
+    FACTOR_ANALYSIS_PROFILES,
+    FactorTester,
+    FactorTesterConfig,
+    forward_return_col,
+)
 from factors.alpha101 import (
     ALPHA101_NAMES,
     Alpha101,
@@ -61,11 +66,18 @@ class Alpha101BatchConfig:
     bear_return_threshold: float = -0.10
     oos_start_date: str | None = None
     oos_fraction: float = 0.3
+    profile: str = "core"
     force: bool = False
     fail_fast: bool = False
     show_progress: bool = False
 
     def __post_init__(self) -> None:
+        profile = str(self.profile).strip().lower()
+        if profile not in FACTOR_ANALYSIS_PROFILES:
+            raise ValueError(
+                "profile must be one of: " + ", ".join(FACTOR_ANALYSIS_PROFILES)
+            )
+        object.__setattr__(self, "profile", profile)
         if not self.windows or any(int(window) <= 0 for window in self.windows):
             raise ValueError("windows must contain positive integers")
         if self.groups not in (5, 10):
@@ -127,6 +139,7 @@ class Alpha101BatchConfig:
             "bear_return_threshold": self.bear_return_threshold,
             "oos_start_date": self.oos_start_date,
             "oos_fraction": self.oos_fraction,
+            "profile": self.profile,
         }
 
 
@@ -355,6 +368,7 @@ class Alpha101BatchRunner:
             or "unclassified"
             for name in self.factors
         }
+        self.leaderboard_factor_directions: dict[str, int] = {}
         invalid_statuses = set(self.factor_statuses.values()).difference(FACTOR_STATUSES)
         if invalid_statuses:
             raise ValueError(f"unknown factor statuses: {', '.join(sorted(invalid_statuses))}")
@@ -384,6 +398,8 @@ class Alpha101BatchRunner:
             fingerprint=self.fingerprint,
             factor_statuses=self.factor_statuses,
             factor_categories=self.factor_categories,
+            profile=self.config.profile,
+            declared_directions=self.leaderboard_factor_directions,
         )
 
         status_rows: list[dict[str, object]] = []
@@ -454,6 +470,7 @@ class Alpha101BatchRunner:
                         bear_return_threshold=self.config.bear_return_threshold,
                         oos_start_date=self.config.oos_start_date,
                         oos_fraction=self.config.oos_fraction,
+                        profile=self.config.profile,
                     ),
                 )
                 temp_root = self.output_dir / ".tmp"
@@ -464,6 +481,7 @@ class Alpha101BatchRunner:
                 metadata = {
                     "factor": factor_name,
                     "fingerprint": self.fingerprint,
+                    "profile": self.config.profile,
                     "row_count": len(factor_frame),
                     "completed_at": _utc_now(),
                     "settings": self.config.result_settings(),
@@ -562,6 +580,9 @@ class Alpha101BatchRunner:
             (factor_name,),
             fingerprint=self.fingerprint,
             factor_statuses=self.factor_statuses,
+            factor_categories=self.factor_categories,
+            profile=self.config.profile,
+            declared_directions=self.leaderboard_factor_directions,
         )
         if not latest.empty:
             cached = self._leaderboard_cache
@@ -592,6 +613,7 @@ class Alpha101BatchRunner:
         return {
             "status": status,
             "fingerprint": self.fingerprint,
+            "profile": self.config.profile,
             "selected_factors": list(self.factors),
             "factor_statuses": self.factor_statuses,
             "settings": self.config.result_settings(),
@@ -609,6 +631,8 @@ def build_leaderboard(
     fingerprint: str | None = None,
     factor_statuses: Mapping[str, str] | None = None,
     factor_categories: Mapping[str, str] | None = None,
+    profile: str = "full",
+    declared_directions: Mapping[str, int] | None = None,
 ) -> pd.DataFrame:
     """Combine successful factor reports into one row per factor and horizon."""
 
@@ -762,12 +786,25 @@ def build_leaderboard(
                 direction = "unknown"
             else:
                 direction = "positive" if rank_ic_mean >= 0 else "negative"
+            if factor in (declared_directions or {}):
+                direction_status = "declared"
+            elif profile == "core" and pd.notna(rank_ic_mean) and rank_ic_mean < 0:
+                direction_status = "needs_full_direction_check"
+            elif profile == "full":
+                direction_status = "full_direction_evaluated"
+            else:
+                direction_status = "high_side_only"
+            if direction_status == "needs_full_direction_check":
+                preferred_long_side = "undetermined"
+                preferred_prefix = None
             row = {
                 "factor": factor,
                 "factor_status": (factor_statuses or {}).get(factor, "active"),
                 "factor_category": (factor_categories or {}).get(
                     factor, "unclassified"
                 ),
+                "profile": profile,
+                "direction_status": direction_status,
                 "window": window,
                 "direction": direction,
                 "rank_ic_mean": rank_ic_mean,
@@ -868,6 +905,8 @@ def build_leaderboard(
         "factor",
         "factor_status",
         "factor_category",
+        "profile",
+        "direction_status",
         "window",
         "direction",
         "rank_ic_mean",

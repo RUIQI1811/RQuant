@@ -50,7 +50,7 @@ def run_external_factor_batch(
     force: bool = False,
     data_signature: str | None = None,
 ) -> ExternalFactorBatchResult:
-    """Run the full single-factor report suite for every external factor."""
+    """Run the configured single-factor report profile for external factors."""
 
     selected = tuple(factors or external.factors)
     missing = set(selected).difference(external.factors)
@@ -116,6 +116,7 @@ def run_external_factor_batch(
                 {
                     "factor": factor,
                     "fingerprint": factor_fingerprint,
+                    "profile": tester_config.profile,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
@@ -160,6 +161,7 @@ def run_external_factor_batch(
         successful,
         factor_statuses=factor_statuses,
         factor_categories=factor_categories,
+        profile=tester_config.profile,
     )
     _atomic_write_csv(destination / "batch_status.csv", status)
     _atomic_write_csv(destination / "leaderboard.csv", leaderboard)
@@ -179,6 +181,7 @@ def run_external_factor_batch(
             "factor_categories": dict(factor_categories or {}),
             "base_fingerprint": base_fingerprint,
             "data_signature": data_signature,
+            "profile": tester_config.profile,
             "tester_config": asdict(tester_config),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "outputs": {

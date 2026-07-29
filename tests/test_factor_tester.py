@@ -1,6 +1,8 @@
 import sys
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -49,6 +51,54 @@ def _test_config(**kwargs):
 
 
 class FactorTesterTest(unittest.TestCase):
+    def test_core_profile_keeps_required_reports_and_skips_optional_stages(self):
+        tester = FactorTester(
+            _sample_factor_frame(),
+            factor_name="core_factor",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                profile="core",
+            ),
+        )
+        skipped = (
+            "market_regime_ic_test",
+            "top_n_return_test",
+            "tradable_bottom_n_test",
+            "tradable_bottom_quantile_test",
+            "tradable_long_short_test",
+            "universe_filter_test",
+        )
+        with ExitStack() as stack:
+            for name in skipped:
+                stack.enter_context(
+                    patch.object(tester, name, side_effect=AssertionError(name))
+                )
+            result = tester.run_all()
+
+        for key in (
+            "distribution",
+            "group_return",
+            "neutralized_ic",
+            "market_cap_ic",
+            "industry_ic",
+            "exposure",
+            "annual_performance",
+            "stat_long_short",
+        ):
+            self.assertIn(key, result)
+        for key in (
+            "market_regime_ic",
+            "top_n_return",
+            "tradable_bottom_n",
+            "tradable_bottom_quantile",
+            "tradable_long_short",
+            "universe_filter",
+            "long_short",
+        ):
+            self.assertNotIn(key, result)
+        self.assertEqual(set(result["annual_performance"]["nav_type"]), {"stat"})
+
     def test_run_all_returns_typed_factor_evaluation_with_mapping_compatibility(self):
         tester = FactorTester(
             _sample_factor_frame(),

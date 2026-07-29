@@ -17,6 +17,7 @@ factor_library:
   market_cap_col: market_cap
 
 evaluation:
+  profile: core
   windows: [1, 5, 10, 20]
   groups: 10
   top_counts: [1, 5, 10, 20, 50, 100]

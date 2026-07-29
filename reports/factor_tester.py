@@ -19,6 +19,7 @@ DEFAULT_FORWARD_WINDOWS = (1, 5, 10, 20)
 DEFAULT_QUANTILES = (0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99)
 DEFAULT_TOP_N_COUNTS = (1, 5, 10, 20, 50, 100)
 TRADING_DAYS_PER_YEAR = 252
+FACTOR_ANALYSIS_PROFILES = ("core", "full")
 
 
 @dataclass(frozen=True)
@@ -67,8 +68,15 @@ class FactorTesterConfig:
     market_regime_min_periods: int = 20
     bull_return_threshold: float = 0.10
     bear_return_threshold: float = -0.10
+    profile: str = "full"
 
     def __post_init__(self) -> None:
+        profile = str(self.profile).strip().lower()
+        if profile not in FACTOR_ANALYSIS_PROFILES:
+            raise ValueError(
+                "profile must be one of: " + ", ".join(FACTOR_ANALYSIS_PROFILES)
+            )
+        object.__setattr__(self, "profile", profile)
         if self.factor_lag_days < 1:
             raise ValueError("factor_lag_days must be at least 1")
         if not self.top_n_counts or any(int(value) <= 0 for value in self.top_n_counts):
@@ -402,8 +410,9 @@ class FactorTester:
         return df
 
     def run_all(self) -> FactorEvaluationResult:
-        """Run all factor tests and return report tables keyed by report name."""
+        """Run the configured report profile and return tables keyed by report name."""
         started_at = time.monotonic()
+        full_profile = self.config.profile == "full"
         LOGGER.info("factor %s: preparing evaluation data", self.factor_name)
         df = self._prepared()
         LOGGER.info(
@@ -424,20 +433,38 @@ class FactorTester:
             self.factor_name,
             time.monotonic() - stage_started_at,
         )
-        market_regime_ic, market_regime_ic_summary = self.market_regime_ic_test(ic)
+        if full_profile:
+            market_regime_ic, market_regime_ic_summary = self.market_regime_ic_test(ic)
+        else:
+            market_regime_ic = pd.DataFrame()
+            market_regime_ic_summary = pd.DataFrame()
         annual_ic = self.annual_ic_test(ic)
         neutralized_ic, neutralized_ic_summary = self.neutralized_ic_test()
         group_return, group_summary = self.group_return_test()
-        top_n_return, top_n_summary = self.top_n_return_test()
+        if full_profile:
+            top_n_return, top_n_summary = self.top_n_return_test()
+        else:
+            top_n_return = pd.DataFrame()
+            top_n_summary = pd.DataFrame()
         tradable_top_n = self.tradable_top_n_test()
         tradable_top_quantile = self.tradable_top_quantile_test()
-        tradable_bottom_n = self.tradable_bottom_n_test()
-        tradable_bottom_quantile = self.tradable_bottom_quantile_test()
+        if full_profile:
+            tradable_bottom_n = self.tradable_bottom_n_test()
+            tradable_bottom_quantile = self.tradable_bottom_quantile_test()
+        else:
+            tradable_bottom_n = pd.DataFrame()
+            tradable_bottom_quantile = pd.DataFrame()
         stat_long_short = self.long_short_test()
-        tradable_long_short = self.tradable_long_short_test()
+        tradable_long_short = (
+            self.tradable_long_short_test() if full_profile else pd.DataFrame()
+        )
         turnover = self.turnover_test()
         exposure = self.exposure_test()
-        universe_filter, filter_status = self.universe_filter_test()
+        if full_profile:
+            universe_filter, filter_status = self.universe_filter_test()
+        else:
+            universe_filter = pd.DataFrame()
+            filter_status = self.filter_status_test()
         oos_start = self._resolve_oos_start()
         ic = self._add_sample_split(ic, oos_start)
         neutralized_ic = self._add_sample_split(neutralized_ic, oos_start)
@@ -463,6 +490,7 @@ class FactorTester:
             ic_summary=ic_summary,
             tradable_top_quantile=tradable_top_quantile,
             tradable_bottom_quantile=tradable_bottom_quantile,
+            include_low_side=full_profile,
         )
         sample_performance = self.sample_performance_test(
             ic=ic,
@@ -495,7 +523,7 @@ class FactorTester:
             row_count=len(df),
         )
         rank_ic = ic[[self.config.date_col, "window", "rank_ic", "sample"]]
-        return FactorEvaluationResult(self.factor_name, {
+        tables = {
             "summary": summary,
             "coverage": coverage,
             "distribution": distribution,
@@ -506,31 +534,37 @@ class FactorTester:
             "market_cap_ic_summary": market_cap_ic_summary,
             "industry_ic": industry_ic,
             "industry_ic_summary": industry_ic_summary,
-            "market_regime_ic": market_regime_ic,
-            "market_regime_ic_summary": market_regime_ic_summary,
             "annual_ic": annual_ic,
             "neutralized_ic": neutralized_ic,
             "neutralized_ic_summary": neutralized_ic_summary,
             "group_return": group_return,
             "group_summary": group_summary,
-            "top_n_return": top_n_return,
-            "top_n_summary": top_n_summary,
             "tradable_top_n": tradable_top_n,
             "tradable_top_quantile": tradable_top_quantile,
-            "tradable_bottom_n": tradable_bottom_n,
-            "tradable_bottom_quantile": tradable_bottom_quantile,
-            "long_short": stat_long_short,
             "stat_long_short": stat_long_short,
-            "tradable_long_short": tradable_long_short,
             "turnover": turnover,
             "exposure": exposure,
-            "universe_filter": universe_filter,
             "filter_status": filter_status,
             "annual_performance": annual_performance,
             "annual_long_only": annual_long_only,
             "horizon_effectiveness": horizon_effectiveness,
             "sample_performance": sample_performance,
-        })
+        }
+        if full_profile:
+            tables.update(
+                {
+                    "market_regime_ic": market_regime_ic,
+                    "market_regime_ic_summary": market_regime_ic_summary,
+                    "top_n_return": top_n_return,
+                    "top_n_summary": top_n_summary,
+                    "tradable_bottom_n": tradable_bottom_n,
+                    "tradable_bottom_quantile": tradable_bottom_quantile,
+                    "long_short": stat_long_short,
+                    "tradable_long_short": tradable_long_short,
+                    "universe_filter": universe_filter,
+                }
+            )
+        return FactorEvaluationResult(self.factor_name, tables)
 
     def write_reports(self, output_root: str | Path = "factor_report") -> Path:
         """Write CSV reports under factor_report/{factor_name}/ and return the directory."""
@@ -575,7 +609,11 @@ class FactorTester:
             "sample_performance": "sample_performance.csv",
         }
         for key, filename in file_map.items():
-            reports[key].to_csv(out_dir / filename, index=False)
+            path = out_dir / filename
+            if key in reports:
+                reports[key].to_csv(path, index=False)
+            elif path.exists():
+                path.unlink()
         return out_dir
 
     def coverage_test(self) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1748,6 +1786,12 @@ class FactorTester:
                     "excluded_low_liquidity": int(daily["_exclude_low_liquidity"].sum()),
                 }
             )
+        return pd.DataFrame(rows), self.filter_status_test()
+
+    def filter_status_test(self) -> pd.DataFrame:
+        """Report filter availability without building per-date exclusion details."""
+        self._prepared()
+        cfg = self.config
         enabled = {
             "tradeable": True,
             "suspended": True,
@@ -1760,7 +1804,7 @@ class FactorTester:
             "market_cap": True,
             "market_regime": True,
         }
-        status = pd.DataFrame(
+        return pd.DataFrame(
             [
                 {
                     "check": name,
@@ -1773,7 +1817,6 @@ class FactorTester:
                 for name, available in self.filter_availability.items()
             ]
         )
-        return pd.DataFrame(rows), status
 
     def annual_performance_test(
         self,
@@ -1882,6 +1925,7 @@ class FactorTester:
         ic_summary: pd.DataFrame,
         tradable_top_quantile: pd.DataFrame,
         tradable_bottom_quantile: pd.DataFrame,
+        include_low_side: bool = True,
     ) -> pd.DataFrame:
         """Compare high/low long-only profitability for every research horizon."""
         rows: list[dict[str, Any]] = []
@@ -1900,7 +1944,7 @@ class FactorTester:
                 preferred = "high_factor"
             else:
                 direction = "negative"
-                preferred = "low_factor"
+                preferred = "low_factor" if include_low_side else "undetermined"
 
             def metrics(frame: pd.DataFrame) -> dict[str, float]:
                 if frame.empty or "window" not in frame.columns:
@@ -2365,6 +2409,7 @@ class FactorTester:
         rows: list[dict[str, Any]] = [
             {"section": "meta", "metric": "factor_name", "value": self.factor_name},
             {"section": "meta", "metric": "row_count", "value": row_count},
+            {"section": "meta", "metric": "profile", "value": self.config.profile},
             {"section": "meta", "metric": "groups", "value": self.config.groups},
             {
                 "section": "meta",

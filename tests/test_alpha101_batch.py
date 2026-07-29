@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reports.alpha101_batch import (
     Alpha101BatchConfig,
     Alpha101BatchRunner,
+    build_run_fingerprint,
     build_forward_return_frame,
     build_leaderboard,
     parse_factor_selection,
@@ -213,6 +214,23 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
         self.assertEqual(settings["bull_return_threshold"], 0.08)
         self.assertEqual(settings["bear_return_threshold"], -0.06)
 
+    def test_profile_is_part_of_resume_fingerprint(self):
+        core = Alpha101BatchConfig(windows=(1,), groups=5, profile="core")
+        full = Alpha101BatchConfig(windows=(1,), groups=5, profile="full")
+
+        self.assertNotEqual(
+            build_run_fingerprint(
+                core,
+                data_signature="data-v1",
+                implementation_signature="code-v1",
+            ),
+            build_run_fingerprint(
+                full,
+                data_signature="data-v1",
+                implementation_signature="code-v1",
+            ),
+        )
+
     def test_show_progress_wraps_factor_loop_and_reports_current_factor(self):
         class FakeProgress:
             def __init__(self, iterable):
@@ -288,27 +306,44 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             self.assertTrue((result.status["factor_status"] == "active").all())
             report_dir = Path(temp_dir) / "alpha_101"
             for filename in (
-                "tradable_long_short.csv",
+                "distribution.csv",
+                "group_return.csv",
+                "group_summary.csv",
+                "market_cap_ic.csv",
+                "market_cap_ic_summary.csv",
+                "industry_ic.csv",
+                "industry_ic_summary.csv",
                 "tradable_top_n.csv",
                 "tradable_top_quantile.csv",
                 "stat_long_short.csv",
-                "top_n_return.csv",
-                "top_n_summary.csv",
                 "neutralized_ic.csv",
+                "neutralized_ic_summary.csv",
+                "exposure.csv",
                 "annual_performance.csv",
                 "sample_performance.csv",
-                "universe_filter.csv",
                 "filter_status.csv",
             ):
                 self.assertTrue((report_dir / filename).exists(), filename)
-            stat = pd.read_csv(report_dir / "long_short.csv")
-            tradable = pd.read_csv(report_dir / "tradable_long_short.csv")
+            for filename in (
+                "market_regime_ic.csv",
+                "market_regime_ic_summary.csv",
+                "top_n_return.csv",
+                "top_n_summary.csv",
+                "tradable_bottom_n.csv",
+                "tradable_bottom_quantile.csv",
+                "long_short.csv",
+                "tradable_long_short.csv",
+                "universe_filter.csv",
+            ):
+                self.assertFalse((report_dir / filename).exists(), filename)
+            stat = pd.read_csv(report_dir / "stat_long_short.csv")
             self.assertIn("stat_cum_nav", stat.columns)
             self.assertNotIn("tradable_cum_nav", stat.columns)
-            self.assertIn("tradable_cum_nav", tradable.columns)
-            self.assertNotIn("stat_cum_nav", tradable.columns)
+            annual = pd.read_csv(report_dir / "annual_performance.csv")
+            self.assertEqual(set(annual["nav_type"]), {"stat"})
             self.assertIn("oos_tradable_period_return", result.leaderboard.columns)
             self.assertIn("factor_status", result.leaderboard.columns)
+            self.assertTrue(result.leaderboard["profile"].eq("core").all())
             self.assertIn("top_1_mean_return", result.leaderboard.columns)
             self.assertIn("top_5_mean_return", result.leaderboard.columns)
             self.assertIn("top_10_mean_return", result.leaderboard.columns)
@@ -322,6 +357,39 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             summary = pd.read_csv(report_dir / "summary.csv")
             lag = summary.loc[summary["metric"].eq("factor_lag_days"), "value"].iloc[0]
             self.assertEqual(float(lag), 1.0)
+            profile = summary.loc[summary["metric"].eq("profile"), "value"].iloc[0]
+            self.assertEqual(profile, "core")
+
+    def test_full_profile_preserves_complete_report_set(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Alpha101BatchRunner(
+                _sample_panels(),
+                factors=("alpha_101",),
+                output_dir=temp_dir,
+                config=Alpha101BatchConfig(
+                    windows=(1,),
+                    groups=5,
+                    profile="full",
+                ),
+                data_signature="data-v1",
+                implementation_signature="code-v1",
+            ).run()
+
+            report_dir = Path(temp_dir) / "alpha_101"
+            for filename in (
+                "market_regime_ic.csv",
+                "market_regime_ic_summary.csv",
+                "top_n_return.csv",
+                "top_n_summary.csv",
+                "tradable_bottom_n.csv",
+                "tradable_bottom_quantile.csv",
+                "long_short.csv",
+                "tradable_long_short.csv",
+                "universe_filter.csv",
+            ):
+                self.assertTrue((report_dir / filename).exists(), filename)
+            annual = pd.read_csv(report_dir / "annual_performance.csv")
+            self.assertEqual(set(annual["nav_type"]), {"stat", "tradable"})
 
     def test_matching_completed_factor_is_resumed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -405,6 +473,53 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             self.assertEqual(row["preferred_net_sharpe"], 0.9)
             self.assertEqual(row["preferred_net_annualized_return"], 0.16)
             self.assertTrue(row["preferred_profitable_after_cost"])
+
+    def test_core_leaderboard_marks_undeclared_negative_direction_for_full_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            factor_dir = Path(temp_dir) / "negative_factor"
+            factor_dir.mkdir()
+            pd.DataFrame(
+                [
+                    {
+                        "window": 5,
+                        "ic_mean": -0.1,
+                        "ic_std": 0.2,
+                        "icir": -0.5,
+                        "ic_win_rate": 0.4,
+                        "rank_ic_mean": -0.2,
+                        "rank_ic_std": 0.25,
+                        "rank_icir": -0.8,
+                        "rank_ic_win_rate": 0.3,
+                        "count": 100,
+                    }
+                ]
+            ).to_csv(factor_dir / "ic_summary.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "window": 5,
+                        "preferred_long_side": "low_factor",
+                        "high_gross_annualized_return": -0.1,
+                        "high_gross_sharpe": -0.5,
+                        "high_net_annualized_return": -0.12,
+                        "high_net_sharpe": -0.7,
+                    }
+                ]
+            ).to_csv(factor_dir / "horizon_effectiveness.csv", index=False)
+
+            row = build_leaderboard(
+                temp_dir,
+                ("negative_factor",),
+                profile="core",
+            ).iloc[0]
+
+            self.assertEqual(row["profile"], "core")
+            self.assertEqual(
+                row["direction_status"],
+                "needs_full_direction_check",
+            )
+            self.assertEqual(row["preferred_long_side"], "undetermined")
+            self.assertTrue(pd.isna(row["preferred_net_sharpe"]))
 
     def test_watch_factors_are_ranked_after_active_factors(self):
         with tempfile.TemporaryDirectory() as temp_dir:

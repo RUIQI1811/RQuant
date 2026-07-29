@@ -126,6 +126,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         default="alpha101",
         help="Factor family to evaluate; default: alpha101",
     )
+    parser.add_argument(
+        "--profile",
+        choices=("core", "full"),
+        default="core",
+        help="Report profile: core skips optional heavy diagnostics; default: core",
+    )
     parser.add_argument("--data", default="data/raw", help="Raw per-symbol OHLCV CSV directory")
     parser.add_argument("--metadata", default="config/stocklist.csv", help="Optional classification CSV")
     parser.add_argument(
@@ -428,6 +434,7 @@ def _run_alpha101(
         bear_return_threshold=args.bear_return_threshold,
         oos_start_date=args.oos_start_date,
         oos_fraction=args.oos_fraction,
+        profile=args.profile,
         force=args.force,
         fail_fast=args.fail_fast,
     )
@@ -542,6 +549,7 @@ def _run_gtja191(
         bear_return_threshold=args.bear_return_threshold,
         oos_start_date=args.oos_start_date,
         oos_fraction=args.oos_fraction,
+        profile=args.profile,
         force=args.force,
         fail_fast=args.fail_fast,
         show_progress=not args.no_progress,
@@ -708,6 +716,7 @@ def _run_external(
         market_regime_min_periods=args.market_regime_min_periods,
         bull_return_threshold=args.bull_return_threshold,
         bear_return_threshold=args.bear_return_threshold,
+        profile=args.profile,
     )
     result = run_external_factor_batch(
         external,

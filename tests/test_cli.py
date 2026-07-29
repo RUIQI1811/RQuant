@@ -98,8 +98,10 @@ class CliTest(unittest.TestCase):
         self.assertTrue(fetch_args.resume)
         self.assertEqual(factor_args.factor, "custom_002")
         self.assertEqual(batch_args.family, "gtja191")
+        self.assertEqual(batch_args.profile, "core")
         self.assertEqual(batch_args.factor_config, None)
         self.assertEqual(external_batch_args.family, "external")
+        self.assertEqual(external_batch_args.profile, "core")
         self.assertEqual(external_batch_args.factor_file, "external.csv")
         self.assertEqual(external_batch_args.context_file, "context.csv")
 

@@ -83,6 +83,15 @@ to three full calendar training years followed by one full test year and runs bo
 gross and cost-aware long-only portfolio backtests. `run_all.py` remains the
 separate custom-buy daily orchestrator and does not import this factor chain.
 
+`factor-batch` has explicit `core` and `full` report profiles. The default `core`
+profile retains distribution, grouped returns, neutralized/cap/industry IC,
+exposure, statistical long-short, and high-side tradable long-only results. It
+does not execute market-regime IC, statistical TopN, low-side tradable portfolios,
+tradable long-short, or per-date universe-detail stages. `full` preserves the
+complete legacy report suite, while the single-factor `factor-test` entry remains
+full by default. The selected profile is part of batch and per-factor manifests
+and resume fingerprints, so outputs from different profiles cannot be reused.
+
 Alpha101 batch research applies the lifecycle catalog before calculation. `active`
 factors run first, `watch` factors remain in research but run and rank after active
 factors, and `disabled` factors are omitted by default. This status changes research
@@ -152,8 +161,9 @@ diagnostics:
   generic tradability metric for A-share factor review because it does not assume
   shorting is available.
 
-- `stat_cum_nav` in `long_short.csv` compounds Top-Bottom `forward_return_h`
-  observations. It is a statistical diagnostic only. Its annualization uses
+- `stat_cum_nav` in `stat_long_short.csv` compounds Top-Bottom `forward_return_h`
+  observations. The compatibility duplicate `long_short.csv` is emitted only by
+  the full profile. This is a statistical diagnostic only. Its annualization uses
   `252 / (N * h)` and its Sharpe uses `sqrt(252 / h)`.
 - `tradable_cum_nav` in `tradable_long_short.csv` uses close-to-close daily returns,
   `h` staggered sleeves, point-in-time universe filters, directional limit rules,

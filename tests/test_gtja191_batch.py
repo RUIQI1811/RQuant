@@ -25,6 +25,7 @@ class GTJA191BatchTest(unittest.TestCase):
             text=True,
         )
         self.assertIn("--factors", result.stdout)
+        self.assertIn("--profile", result.stdout)
         self.assertIn("--start-factor", result.stdout)
         self.assertIn("--top-counts", result.stdout)
         self.assertIn("--no-progress", result.stdout)
@@ -44,6 +45,7 @@ class GTJA191BatchTest(unittest.TestCase):
 
         settings = config.result_settings()
 
+        self.assertEqual(settings["profile"], "core")
         self.assertEqual(settings["commission_rate"], 0.0012)
         self.assertEqual(settings["market_cap_groups"], 4)
         self.assertEqual(settings["market_regime_lookback_days"], 45)

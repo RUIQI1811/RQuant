@@ -218,6 +218,7 @@ class ExternalFactorTests(unittest.TestCase):
                     min_listing_days=0,
                     market_regime_lookback_days=5,
                     market_regime_min_periods=2,
+                    profile="core",
                 ),
                 factor_categories={
                     "external_a": "price_behavior",
@@ -237,6 +238,7 @@ class ExternalFactorTests(unittest.TestCase):
                     min_listing_days=0,
                     market_regime_lookback_days=5,
                     market_regime_min_periods=2,
+                    profile="core",
                 ),
                 factor_categories={
                     "external_a": "price_behavior",
@@ -259,13 +261,18 @@ class ExternalFactorTests(unittest.TestCase):
 
             self.assertTrue((root / "batch/external_a/market_cap_ic.csv").exists())
             self.assertTrue((root / "batch/external_a/industry_ic.csv").exists())
-            self.assertTrue((root / "batch/external_a/market_regime_ic.csv").exists())
+            self.assertFalse((root / "batch/external_a/market_regime_ic.csv").exists())
             self.assertTrue((root / "batch/external_a/annual_long_only.csv").exists())
             self.assertTrue((root / "batch/external_a/horizon_effectiveness.csv").exists())
             self.assertTrue((root / "batch/long_only_profitability.csv").exists())
             self.assertTrue((root / "batch/profitable_long_only.csv").exists())
             self.assertEqual(set(batch.status["status"]), {"success"})
             self.assertTrue(resumed_batch.status["resumed"].all())
+            self.assertTrue(batch.leaderboard["profile"].eq("core").all())
+            batch_manifest = json.loads(
+                (root / "batch/manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(batch_manifest["profile"], "core")
             self.assertEqual(
                 set(batch.leaderboard["factor_category"]),
                 {"price_behavior", "price_volume"},

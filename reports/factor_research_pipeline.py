@@ -58,6 +58,7 @@ _LIBRARY_KEYS = {
     "market_cap_col",
 }
 _EVALUATION_KEYS = {
+    "profile",
     "windows",
     "groups",
     "top_counts",
@@ -190,6 +191,7 @@ _ML_LIBRARY_KEYS = (
     "context_symbol_col",
 )
 _EVALUATION_CLI_KEYS = (
+    "profile",
     "windows",
     "groups",
     "top_counts",
@@ -393,6 +395,10 @@ def load_factor_research_config(
         raise ValueError("factor_file can only be used with family=external")
 
     machine_learning.setdefault("enabled", True)
+    evaluation.setdefault("profile", "core")
+    if str(evaluation["profile"]).strip().lower() not in {"core", "full"}:
+        raise ValueError("evaluation.profile must be core or full")
+    evaluation["profile"] = str(evaluation["profile"]).strip().lower()
     if skip_ml:
         machine_learning["enabled"] = False
     _validate_long_only_ml_contract(machine_learning)

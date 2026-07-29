@@ -19,6 +19,7 @@ from reports.alpha101_batch import (
     build_run_fingerprint,
 )
 from factors.catalog import FACTOR_STATUSES
+from factors.directions import VALID_FACTOR_DIRECTIONS
 from factors.gtja191 import (
     GTJA191,
     GTJA191DataError,
@@ -30,6 +31,18 @@ from factors.gtja191 import (
 
 
 GTJA191BatchConfig = Alpha101BatchConfig
+
+
+class _DirectedGTJA191:
+    """Apply a research direction after evaluating the original GTJA formula."""
+
+    def __init__(self, calculator: GTJA191, directions: Mapping[str, int]) -> None:
+        self._calculator = calculator
+        self._directions = directions
+
+    def calculate(self, name: str | int) -> pd.DataFrame:
+        factor = normalize_gtja_name(name)
+        return self._calculator.calculate(factor) * self._directions.get(factor, 1)
 
 
 @dataclass(frozen=True)
@@ -116,6 +129,7 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
         implementation_signature: str = "unspecified-implementation",
         factor_statuses: Mapping[str, str] | None = None,
         factor_categories: Mapping[str, str] | None = None,
+        factor_directions: Mapping[str, int] | None = None,
     ) -> None:
         normalized = tuple(normalize_gtja_name(name) for name in factors)
         if not normalized:
@@ -125,7 +139,27 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
         self.output_dir = Path(output_dir)
         self.config = config or GTJA191BatchConfig()
         self.data_signature = data_signature
-        self.implementation_signature = implementation_signature
+        supplied_directions = factor_directions or {}
+        self.leaderboard_factor_directions = {
+            name: int(supplied_directions.get(name, 1))
+            for name in GTJA191_NAMES
+        }
+        self.factor_directions = {
+            name: self.leaderboard_factor_directions[name]
+            for name in self.factors
+        }
+        invalid_directions = set(self.leaderboard_factor_directions.values()).difference(
+            VALID_FACTOR_DIRECTIONS
+        )
+        if invalid_directions:
+            raise ValueError("GTJA191 factor directions must be -1 or 1")
+        direction_signature = ",".join(
+            f"{name}:{self.leaderboard_factor_directions[name]}"
+            for name in GTJA191_NAMES
+        )
+        self.implementation_signature = (
+            f"{implementation_signature}:factor-directions={direction_signature}"
+        )
         supplied = factor_statuses or {}
         self.leaderboard_factor_statuses = {
             name: str(supplied.get(name, "active")).strip().lower()
@@ -151,9 +185,33 @@ class GTJA191BatchRunner(Alpha101BatchRunner):
         self.fingerprint = build_run_fingerprint(
             self.config,
             data_signature=data_signature,
-            implementation_signature=implementation_signature,
+            implementation_signature=self.implementation_signature,
         )
-        self.calculator = GTJA191(panels)
+        self.calculator = _DirectedGTJA191(GTJA191(panels), self.factor_directions)
+
+    def _status_row(
+        self,
+        factor: str,
+        status: str,
+        duration: float,
+        *,
+        row_count: object,
+        message: str = "",
+    ) -> dict[str, object]:
+        row = super()._status_row(
+            factor,
+            status,
+            duration,
+            row_count=row_count,
+            message=message,
+        )
+        row["factor_direction"] = self.factor_directions[factor]
+        return row
+
+    def _manifest(self, *, status: str, base_rows: int) -> dict[str, object]:
+        manifest = super()._manifest(status=status, base_rows=base_rows)
+        manifest["factor_directions"] = self.factor_directions
+        return manifest
 
     def run(self) -> GTJA191BatchResult:
         result = super().run()

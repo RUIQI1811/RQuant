@@ -408,8 +408,14 @@ data/portfolio_backtest/
 
 ### 因子研究一键 run-all
 
-`factor-run-all` 把同一因子库的批量检验、分类汇总、相关性去重、ML
-walk-forward 和模型组合回测串成一个可恢复工作流。默认配置：
+`factor-run-all` 是一个轻量命令串联器，不是第四套因子研究实现。它使用当前
+Python 解释器按顺序各启动一次正式 CLI：
+
+1. `python -m rquant factor-batch`
+2. `python -m rquant factor-correlation`
+3. `python -m rquant fit-multifactor --run-backtests`
+
+因子公式、检验指标、相关性、ML 和组合回测都由上述正式命令负责。默认配置：
 
 ```text
 config/factor_research_run_all.yaml
@@ -424,47 +430,55 @@ python -m rquant factor-run-all --config config/factor_research_run_all.yaml
 不改 YAML 也可以在命令行临时选择内置库：
 
 ```bash
-python -m rquant factor-run-all --config config/factor_research_run_all.yaml --family gtja191 --factor-config config/gtja191_factors.yaml --output factor_report/factor_run_all/gtja191
+python -m rquant factor-run-all --config config/factor_research_run_all.yaml --family gtja191 --factor-config config/gtja191_factors.yaml
 ```
 
 收到新的宽表或长表因子库后，使用外部入口：
 
 ```bash
-python -m rquant factor-run-all --config config/factor_research_run_all.yaml --family external --factor-file data/factors/my_factors.csv --factor-config config/my_factors.yaml --output factor_report/factor_run_all/my_factors
+python -m rquant factor-run-all --config config/factor_research_run_all.yaml --family external --factor-file data/factors/my_factors.csv --factor-config config/my_factors.yaml
 ```
 
 外部库的 `factor_config` 必须给每个因子填写研究分类，例如
 `price_behavior`、`price_volume`、`traditional_technical`、`market_related`、
-`liquidity` 或其他有明确含义的类别。若存在未分类因子，入口会在长任务开始前停止，
-并在输出目录生成 `factor_classification_template.yaml`；补全后再运行即可。
+`liquidity` 或其他有明确含义的类别。RunAll 会给正式 `factor-batch`
+传入 `--require-classification`；若存在未分类因子，由 `factor-batch` 在其正常输出
+目录生成 `factor_classification_template.yaml` 并非零退出。
 
 流水线固定执行：
 
 1. 对配置中的全部周期生成 IC/Rank IC、方向、高低值两侧只做多毛收益与净收益、
    扣费前后夏普、逐年收益、市值分档 IC、行业/板块 IC 和牛熊震荡 IC。
-2. 用批量排行榜中的同周期扣费后净夏普作为质量优先级，计算每日横截面
+2. 用批量排行榜中的同周期成本前夏普作为质量优先级，计算每日横截面
    Spearman/Pearson，两两 `|Spearman| >= 0.8` 聚类去重。
-3. 只把去重后、在指定周期扣费后仍盈利的因子写入 `ml_candidate_factors.csv`。
+3. `fit-multifactor` 直接读取 `deduplicated_factors.csv`，全部去重代表进入
+   ML；因子阶段不按成本或是否盈利过滤特征。
 4. 严格使用过去三个完整日历年训练、预测下一个完整日历年；每个模型分别运行
    零成本和实际成本的 A 股约束组合回测。
 
-这里“高值侧”和“低值侧”都表示买入该侧股票；不会卖空任何股票。统计型多空文件
-仍可作为诊断，但不会进入 ML 或组合执行。若没有任何去重因子在指定周期扣费后盈利，
-工作流会明确记录 `skipped_no_profitable_candidates` 并跳过 ML，而不是把无合格证据的
-因子静默送入模型。
+这里“高值侧”和“低值侧”都表示买入该侧股票；不会卖空任何股票。因子阶段仍输出
+成本前/成本后报告供研究，但成本不参与 ML 特征准入。交易费用只在最终模型组合回测中
+用于判断模型能否盈利。统计型多空文件仍仅作诊断，不会进入 ML 或组合执行。
 
-默认输出结构：
+每个子命令都有自己的 `data/runs/<run-id>/run.json` 和 `run.log`。RunAll 自身只在
+`data/runs/` 保留轻量父运行记录，记录子命令、退出码和路径；不再生成
+`factor_report/factor_run_all/`、专属 `summary.json` 或研究 `manifest.json`。
+
+默认按因子库分开三个正式阶段目录。Alpha101 例如：
 
 ```text
-factor_report/factor_run_all/alpha101/manifest.json
-factor_report/factor_run_all/alpha101/summary.json
-factor_report/factor_run_all/alpha101/batch/
-factor_report/factor_run_all/alpha101/correlation/
-factor_report/factor_run_all/alpha101/ml/
+factor_report/alpha101_batch/
+factor_report/alpha101_correlation/
+data/ml/alpha101_multifactor/
 ```
 
-各阶段沿用原有断点和签名；只有确认需要重算时追加 `--force`。只检查因子研究和去重、
-暂不启动 ML 时使用 `--skip-ml`。该命令不自动抓取行情或历史市值；应先完成
+外部库使用因子文件名作为稳定目录名。可分别用 `--batch-output`、
+`--correlation-output` 和 `--ml-output` 覆盖。旧 `--output`/`execution.output`
+仅作兼容，会警告弃用。
+
+任一子命令非零退出时立即停止，不执行后续阶段。`--force` 传给支持断点重算的
+`factor-batch` 和 `fit-multifactor`；相关性命令正常重算。只运行前两步时使用
+`--skip-ml`。该命令不自动抓取行情或历史市值；应先完成
 `fetch-data` / `fetch-context`，并保证上下文 manifest 为 `complete`。
 
 ### 单因子检验
@@ -626,6 +640,12 @@ GTJA191 与 Alpha101 一样按经济解释管理：默认只运行 `watch` 的�
 趋势/反转、波动与价量/流动性假设；任意拟合权重、原始价格阈值/高次幂和不透明嵌套
 表达式默认 `disabled`。当前不设置 `active`，历史表现不能替代样本外长多验证。
 
+同一配置中的 `default_direction` / `directions` 控制研究值方向，取值只能是 `1` 或
+`-1`。当前 `-1` 清单来自可比全样本中 10 日、20 日 `rank_ic_mean` 平均值为负的
+104 个因子。GTJA 原始公式不改；批量检验、横截面相关性和 ML 特征会在公式计算后、
+滞后或排名前统一乘以该系数。方向变化会进入批处理指纹，旧结果不会被错误续用。
+不可比或缺失 IC 的因子保持默认 `1`，不会被自动推断方向。
+
 为保持现有生命周期读取兼容，`factors` 继续保存纯状态字符串，研究分类放在独立的
 `categories` 映射：
 
@@ -634,6 +654,9 @@ factors:
   alpha_040: watch
 categories:
   alpha_040: price_volume
+default_direction: 1
+directions:
+  gtja_070: -1
 ```
 
 当前分类名包括 `price_behavior`、`price_volume`、`traditional_technical`、
@@ -663,8 +686,11 @@ date,symbol,factor,factor_value
 直接失败，不会静默聚合。批量完整检验命令：
 
 ```bash
-python -m rquant factor-batch --family external --factor-file data/factors/my_factors.csv --factor-layout auto --data data/raw --metadata config/stocklist.csv --factors all --factor-config config/my_factors.yaml --windows 1 5 10 20 --groups 10 --output factor_report/external_batch/latest
+python -m rquant factor-batch --family external --factor-file data/factors/my_factors.csv --factor-layout auto --data data/raw --metadata config/stocklist.csv --factors all --factor-config config/my_factors.yaml --require-classification --windows 1 5 10 20 --groups 10 --output factor_report/external_batch/latest
 ```
+
+`--require-classification` 会在读取全量行情前检查所有已选因子；存在未分类项时，
+在该 batch 输出目录写入 `factor_classification_template.yaml` 并非零退出。
 
 当前 `data/raw/*.csv` 主要是 OHLCV/amount 日线，并不天然包含历史市值。市值分档、
 动态行业和自定义牛熊状态应通过单独的时点上下文文件提供，不能拿当前静态市值回填：
@@ -716,31 +742,31 @@ python -m rquant factor-correlation --data data/raw --metadata config/stocklist.
 GTJA191 使用同一个相关性和去重入口；默认读取其独立生命周期配置：
 
 ```bash
-python -m rquant factor-correlation --family gtja191 --data data/raw --metadata config/stocklist.csv --factors all --high-correlation-threshold 0.8 --priority-file factor_report/gtja191_batch/leaderboard.csv --priority-score-col preferred_net_sharpe --priority-window 20 --eligibility-col preferred_profitable_after_cost --output factor_report/gtja191_correlation
+python -m rquant factor-correlation --family gtja191 --data data/raw --metadata config/stocklist.csv --factors all --high-correlation-threshold 0.8 --priority-file factor_report/gtja191_batch/leaderboard.csv --priority-score-col preferred_gross_sharpe --priority-window 20 --output factor_report/gtja191_correlation
 ```
 
 只有需要大盘或风格序列的 GTJA 因子才需额外传入 `--benchmark-file` 或
 `--style-factor-file`；缺失输入会逐因子记为失败，不会伪造代理数据。
 
-如需按样本外净夏普选择高相关簇中的代表因子，可提供批量结果表和质量字段：
+如需按样本外成本前夏普选择高相关簇中的代表因子，可提供批量结果表和质量字段：
 
 ```bash
-python -m rquant factor-correlation --data data/raw --metadata config/stocklist.csv --factors all --high-correlation-threshold 0.8 --priority-file factor_report/alpha101_batch/latest/leaderboard.csv --priority-factor-col factor --priority-score-col preferred_net_sharpe --output factor_report/factor_correlation
+python -m rquant factor-correlation --data data/raw --metadata config/stocklist.csv --factors all --high-correlation-threshold 0.8 --priority-file factor_report/alpha101_batch/latest/leaderboard.csv --priority-factor-col factor --priority-score-col preferred_gross_sharpe --output factor_report/factor_correlation
 ```
 
 输出包括完整矩阵、两两相关表、`deduplication.csv` 和
 `deduplicated_factors.csv`。相关性绝对值达到阈值的因子构成连通簇；有质量分数时保留
 簇内最高分，否则只用稳定名称顺序生成暂定名单，并在 `selection_reason` 中明确标注。
 
-同一份外部因子文件可直接计算相关性并使用批量净夏普去重：
+同一份外部因子文件可直接计算相关性并使用批量成本前夏普去重：
 
 ```bash
-python -m rquant factor-correlation --factor-file data/factors/my_factors.csv --factor-layout auto --factors all --high-correlation-threshold 0.8 --priority-file factor_report/external_batch/latest/leaderboard.csv --priority-score-col preferred_net_sharpe --priority-window 20 --eligibility-col preferred_profitable_after_cost --output factor_report/external_correlation
+python -m rquant factor-correlation --factor-file data/factors/my_factors.csv --factor-layout auto --factors all --high-correlation-threshold 0.8 --priority-file factor_report/external_batch/latest/leaderboard.csv --priority-score-col preferred_gross_sharpe --priority-window 20 --output factor_report/external_correlation
 ```
 
-上述命令先用 20 日周期、与 IC 方向一致的净夏普选择高相关簇代表，再把扣费后确实盈利的
-代表写入 `ml_candidate_factors.csv`。完整的 `deduplicated_factors.csv` 仍保留作审计，
-不会把不盈利代表静默送入 ML。
+上述命令先用 20 日周期、与 IC 方向一致的成本前夏普选择高相关簇代表。
+`factor-run-all` 将 `deduplicated_factors.csv` 直接作为 `fit-multifactor`
+的 `--factor-selection-file`，不在因子阶段按成本或盈利过滤；成本只在最终模型组合回测中生效。
 
 ### 因子筛选和组合回测
 
@@ -805,6 +831,24 @@ python -m rquant factor-ensemble-backtest --factors alpha_040 alpha_069 alpha_07
 Qlib LightGBM、Qlib DoubleEnsemble 和 Torch MLP。默认将特征和标签都转换为每日横截面百分位，因此学习
 目标是做多排名，而不是精确拟合极端的原始收益率。
 
+日常运行优先使用专用 YAML；其中集中配置数据、因子来源、模型、walk-forward、
+回测成本和输出目录：
+
+```bash
+python -m rquant fit-multifactor --config config/ml.yaml
+```
+
+默认 YAML 从 `config/factors.yaml` 导入 `watch` 因子，运行 Ridge 和 ElasticNet，
+并执行样本外组合回测。需要其他模型时修改 `training.models`。命令行显式参数会覆盖
+对应 YAML 字段，例如只临时运行 Ridge 或强制重算：
+
+```bash
+python -m rquant fit-multifactor --config config/ml.yaml --models ridge --force
+```
+
+`config/ml.yaml` 的 `version` 当前必须为 `1`；未知分区或字段会直接报错，避免拼写错误
+被静默忽略。YAML 只控制 ML 工作流参数，不保存密钥，也不会改变因子生命周期状态。
+
 ```bash
 python -m rquant fit-multifactor --data data/raw --metadata config/stocklist.csv --factors alpha_040 alpha_069 alpha_077 custom_001 custom_002 --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --feature-transform rank --target-transform rank --train-size 504 --test-size 21 --signal-top-n 10 --start 2018-01-01 --end 2026-06-30 --output data/ml/multifactor_20d
 ```
@@ -838,7 +882,8 @@ python -m rquant fit-multifactor --data data/raw --metadata config/stocklist.csv
 
 默认只导入 `active`；本配置当前没有 `active`，因此应显式使用
 `--lifecycle-statuses watch`。导入仍会统一执行一日因子滞后和 walk-forward，
-不会把 ML 分数反写到因子生命周期配置。
+不会把 ML 分数反写到因子生命周期配置。`fit-multifactor` 和独立的
+`make-ml-dataset` 都会读取同一 GTJA 方向映射；后者可用 `--factor-config` 覆盖默认配置。
 
 `next_open_return_20d` 会自动使用至少 21 个交易日的 purge gap。主要产物：
 
@@ -849,12 +894,21 @@ data/ml/multifactor_20d/models/<model>/predictions.csv
 data/ml/multifactor_20d/models/<model>/signals.csv
 data/ml/multifactor_20d/models/<model>/summary.json
 data/ml/multifactor_20d/leaderboard.csv
+data/ml/multifactor_20d/returns_summary.csv
+data/ml/multifactor_20d/yearly_returns.csv
+data/ml/multifactor_20d/net_equity_curve.html
+data/ml/multifactor_20d/backtests/<model>/<gross|net>/portfolio_summary.json
+data/ml/multifactor_20d/backtests/<model>/<gross|net>/yearly_returns.csv
+data/ml/multifactor_20d/backtests/<model>/<gross|net>/equity_curve.html
 data/ml/multifactor_20d/manifest.json
 ```
 
 `leaderboard.csv` 只用样本外 Rank IC 等预测诊断排序，不将其表述为可交易利润。
-每个模型的 `signals.csv` 还需通过 `signal-backtest` 进入次日开盘、费用、涨跌停、
-停牌、整手和 T+1 约束下的 long-only 组合回测。
+模型完成后默认把每个 `signals.csv` 送入次日开盘、费用、涨跌停、停牌、整手和 T+1
+约束下的 long-only 组合回测。`returns_summary.csv` 汇总总收益、整体复合年化、各自然年
+年化收益的算术平均、回撤和夏普；`yearly_returns.csv` 逐模型、逐成本口径记录每年总收益、
+年化收益、实际覆盖日期和是否为不完整年份。`net_equity_curve.html` 对比所有模型扣费后的
+净值走势；各模型的 `gross` / `net` 目录保留独立原始摘要、逐年表和走势图供审计。
 
 ### 机器学习分步 walk-forward
 
@@ -869,6 +923,14 @@ python -m rquant make-ml-dataset --data data/raw --metadata config/stocklist.csv
 截取研究日期，因此不会因 `--end` 提前截断标签所需的未来价格。若只做统计诊断，
 可显式传 `--label-mode close_to_close`。输出：
 
+ML 股票池按每个交易日动态构造，不使用今天的静态股票表回填历史。只有在
+`data/raw` 中当日存在有限收盘价观测的股票才进入当日特征主键；因子原值先用同一
+时点掩码过滤，再执行一日滞后和横截面变换。因此未上市日期和退市后的日期不会
+参与排名；一只日后退市的股票在其尚有真实行情的历史日期仍会保留。
+`manifest.json` 的 `point_in_time_universe.yearly_counts` 逐年记录交易日数和每日股票数范围。
+要避免幸存者偏差，原始目录本身必须保留历史退市股票的行情文件；仅有当前上市股的
+数据无法恢复已经缺失的历史成分股。
+
 ```text
 data/ml/dataset_20d/features.csv
 data/ml/dataset_20d/labels.csv
@@ -882,7 +944,7 @@ GTJA 因子必须通过 `--benchmark-file` / `--style-factor-file` 提供真实�
 外部因子也可直接进入 ML，并可与内置因子混用：
 
 ```bash
-python -m rquant fit-multifactor --data data/raw --factor-file data/factors/my_factors.csv --factor-layout auto --context-file data/context/daily_context.csv --factor-selection-file factor_report/external_correlation/ml_candidate_factors.csv --factor-selection-col factor --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --feature-transform rank --target-transform rank --window-mode calendar-years --train-years 3 --test-years 1 --signal-top-n 10 --start 2018-01-01 --end 2026-06-30 --output data/ml/external_3y_1y
+python -m rquant fit-multifactor --data data/raw --factor-file data/factors/my_factors.csv --factor-layout auto --context-file data/context/daily_context.csv --factor-selection-file factor_report/external_correlation/deduplicated_factors.csv --factor-selection-col factor --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --feature-transform rank --target-transform rank --window-mode calendar-years --train-years 3 --test-years 1 --signal-top-n 10 --start 2018-01-01 --end 2026-06-30 --output data/ml/external_3y_1y
 ```
 
 GTJA191 去重后的长多盈利因子可直接使用同一衔接文件；`--run-backtests` 会对每个模型的
@@ -891,12 +953,13 @@ GTJA191 去重后的长多盈利因子可直接使用同一衔接文件；`--run
 `profitable_models.csv`：
 
 ```bash
-python -m rquant fit-multifactor --data data/raw --context-file data/context/daily_basic --factor-selection-file factor_report/gtja191_correlation/ml_candidate_factors.csv --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --window-mode calendar-years --train-years 3 --test-years 1 --signal-top-n 10 --run-backtests --backtest-commission-wan 0.8 --start 2018-01-01 --end 2026-07-10 --output data/ml/gtja191_3y_1y
+python -m rquant fit-multifactor --data data/raw --context-file data/context/daily_basic --factor-selection-file factor_report/gtja191_correlation/deduplicated_factors.csv --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --window-mode calendar-years --train-years 3 --test-years 1 --signal-top-n 10 --run-backtests --backtest-commission-wan 0.8 --start 2018-01-01 --end 2026-07-10 --output data/ml/gtja191_3y_1y
 ```
 
 这里的两套回测都只读取 `signal_type=buy`；零成本口径把佣金、印花税和过户费同时设为
 零，实际成本口径默认使用万分之 0.8 佣金、万分之 5 印花税和十万分之 1 过户费。
-`--run-backtests` 默认关闭，避免普通模型拟合无意触发多次全市场组合回测。
+组合回测现在默认开启，保证 ML 完成时同时交付收益与走势图；`--run-backtests` 仍作为
+显式兼容参数保留。只需要预测诊断、明确不计算收益时使用 `--skip-backtests`。
 
 `dataset/manifest.json` 会逐列记录 `external`、`alpha101`、`gtja191` 或 `custom`
 来源。模型仍只产生样本外多头排名信号；未开启集成回测时，可把对应的 `signals.csv`
@@ -1064,6 +1127,8 @@ factor_report/              因子检验和批处理结果
 ```
 
 `data/` 和 `factor_report/` 默认是本地研究产物，不纳入 Git。
+目录职责、历史归档规则和默认只预览的整理命令见
+[`docs/local_artifacts.md`](docs/local_artifacts.md)。
 
 ## 验证
 

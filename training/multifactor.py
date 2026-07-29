@@ -19,6 +19,7 @@ from backtest.signal_portfolio import run_signal_portfolio_backtest
 from domain.artifacts import WorkflowResult
 from domain.research import MultifactorComparisonResult
 from models.elasticnet import DEFAULT_ELASTICNET_ALPHA, DEFAULT_ELASTICNET_L1_RATIO
+from factors.directions import load_gtja_factor_directions
 
 from training.build_dataset import MLDatasetConfig, build_ml_dataset
 from training.train_walk_forward import (
@@ -30,6 +31,89 @@ from training.train_walk_forward import (
 
 
 logger = logging.getLogger(__name__)
+
+
+ML_RUN_CONFIG_VERSION = 1
+_ML_RUN_CONFIG_SCHEMA: dict[str, dict[str, str]] = {
+    "inputs": {
+        "data": "data",
+        "metadata": "metadata",
+        "benchmark_file": "benchmark_file",
+        "style_factor_file": "style_factor_file",
+        "factor_file": "factor_file",
+        "factor_layout": "factor_layout",
+        "factor_date_col": "factor_date_col",
+        "factor_symbol_col": "factor_symbol_col",
+        "factor_name_col": "factor_name_col",
+        "factor_value_col": "factor_value_col",
+        "context_file": "context_file",
+        "context_date_col": "context_date_col",
+        "context_symbol_col": "context_symbol_col",
+    },
+    "features": {
+        "names": "factors",
+        "lifecycle_config": "factor_config",
+        "lifecycle_statuses": "lifecycle_statuses",
+        "selection_file": "factor_selection_file",
+        "selection_col": "factor_selection_col",
+    },
+    "training": {
+        "models": "models",
+        "target_window": "target_window",
+        "label_mode": "label_mode",
+        "feature_transform": "feature_transform",
+        "target_transform": "target_transform",
+        "train_size": "train_size",
+        "test_size": "test_size",
+        "window_mode": "window_mode",
+        "train_years": "train_years",
+        "test_years": "test_years",
+        "purge_days": "purge_days",
+        "signal_top_n": "signal_top_n",
+        "random_state": "random_state",
+        "start_date": "start",
+        "end_date": "end",
+    },
+    "model_parameters": {
+        "ridge_alpha": "ridge_alpha",
+        "elasticnet_alpha": "elasticnet_alpha",
+        "elasticnet_l1_ratio": "elasticnet_l1_ratio",
+        "lightgbm_estimators": "lightgbm_estimators",
+        "lightgbm_n_jobs": "lightgbm_n_jobs",
+        "qlib_valid_ratio": "qlib_valid_ratio",
+        "doubleensemble_num_models": "doubleensemble_num_models",
+        "mlp_hidden_sizes": "mlp_hidden_sizes",
+        "mlp_epochs": "mlp_epochs",
+        "mlp_batch_size": "mlp_batch_size",
+        "mlp_learning_rate": "mlp_learning_rate",
+        "mlp_weight_decay": "mlp_weight_decay",
+        "mlp_dropout": "mlp_dropout",
+        "device": "device",
+    },
+    "backtest": {
+        "enabled": "run_backtests",
+        "initial_cash": "backtest_initial_cash",
+        "commission_wan": "backtest_commission_wan",
+        "stamp_tax_rate": "backtest_stamp_tax_rate",
+        "transfer_fee_rate": "backtest_transfer_fee_rate",
+        "lot_size": "backtest_lot_size",
+    },
+    "execution": {
+        "force": "force",
+        "output": "output",
+    },
+}
+_ML_LIST_FIELDS = {
+    "factors",
+    "lifecycle_statuses",
+    "models",
+    "mlp_hidden_sizes",
+}
+_ML_DEST_OPTION_OVERRIDES = {
+    "run_backtests": ("--run-backtests", "--skip-backtests"),
+    "start": ("--start",),
+    "end": ("--end",),
+}
 
 
 @dataclass(frozen=True)
@@ -64,7 +148,7 @@ class MultifactorFitConfig:
     device: str = "auto"
     start_date: str | None = None
     end_date: str | None = None
-    run_backtests: bool = False
+    run_backtests: bool = True
     backtest_initial_cash: float = 10000000.0
     backtest_commission_wan: float = 0.8
     backtest_stamp_tax_rate: float = 0.0005
@@ -134,9 +218,11 @@ def run_multifactor_fit(
     factor_name_col: str = "factor",
     factor_value_col: str = "factor_value",
     factor_selection_file: str | Path | None = None,
+    factor_directions: dict[str, int] | None = None,
     context_file: str | Path | None = None,
     context_date_col: str = "date",
     context_symbol_col: str = "symbol",
+    run_config_file: str | Path | None = None,
     force: bool = False,
 ) -> WorkflowResult[MultifactorComparisonResult]:
     """Build the factor matrix, train each model, and rank OOS diagnostics."""
@@ -177,6 +263,7 @@ def run_multifactor_fit(
         context_file=context_file,
         context_date_col=context_date_col,
         context_symbol_col=context_symbol_col,
+        factor_directions=factor_directions,
     )
     logger.info(
         "Shared dataset ready: features=%s, labels=%s",
@@ -275,6 +362,7 @@ def run_multifactor_fit(
     leaderboard_path = destination / "leaderboard.csv"
     profitable_models_path = destination / "profitable_models.csv"
     manifest_path = destination / "manifest.json"
+    performance_outputs: dict[str, Path] = {}
     _atomic_write_csv(leaderboard_path, leaderboard)
     if config.run_backtests:
         profitable = leaderboard.loc[
@@ -287,10 +375,17 @@ def run_multifactor_fit(
             kind="mergesort",
         )
         _atomic_write_csv(profitable_models_path, profitable)
+        performance_outputs = _write_performance_outputs(
+            destination=destination,
+            model_backtests=model_backtests,
+        )
     _atomic_write_json(
         manifest_path,
         {
             "config": asdict(config),
+            "run_config_file": (
+                str(Path(run_config_file).resolve()) if run_config_file else None
+            ),
             "normalized_factors": list(dataset_config.factors),
             "target_col": target_col,
             "dataset_manifest": str(dataset_outputs["manifest_path"].resolve()),
@@ -326,6 +421,10 @@ def run_multifactor_fit(
             "profitable_models": (
                 profitable_models_path.name if config.run_backtests else None
             ),
+            "performance": {
+                key: str(path.resolve())
+                for key, path in performance_outputs.items()
+            },
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -350,6 +449,7 @@ def run_multifactor_fit(
     }
     if config.run_backtests:
         output_mapping["profitable_models_path"] = profitable_models_path
+        output_mapping.update(performance_outputs)
     return WorkflowResult.from_mapping(output_mapping)
 
 
@@ -371,9 +471,13 @@ def _run_model_backtests(
         "backtest_status": "not_run",
         "gross_total_return": None,
         "gross_annualized_return": None,
+        "gross_average_yearly_annualized_return": None,
+        "gross_annualized_return_mean": None,
         "gross_sharpe": None,
         "net_total_return": None,
         "net_annualized_return": None,
+        "net_average_yearly_annualized_return": None,
+        "net_annualized_return_mean": None,
         "net_sharpe": None,
         "net_max_drawdown": None,
         "net_realized_trade_count": None,
@@ -421,6 +525,12 @@ def _run_model_backtests(
         summary = backtest["result"].summary
         metrics[f"{scenario}_total_return"] = summary.get("total_return")
         metrics[f"{scenario}_annualized_return"] = summary.get(
+            "overall_annualized_return"
+        )
+        metrics[f"{scenario}_average_yearly_annualized_return"] = summary.get(
+            "average_yearly_annualized_return"
+        )
+        metrics[f"{scenario}_annualized_return_mean"] = summary.get(
             "annualized_return_mean"
         )
         metrics[f"{scenario}_sharpe"] = summary.get("sharpe_ratio")
@@ -434,6 +544,123 @@ def _run_model_backtests(
     metrics["profitable_before_cost"] = _is_positive(metrics["gross_total_return"])
     metrics["profitable_after_cost"] = _is_positive(metrics["net_total_return"])
     return metrics, artifacts
+
+
+def _write_performance_outputs(
+    *,
+    destination: Path,
+    model_backtests: dict[str, dict[str, dict[str, Path]]],
+) -> dict[str, Path]:
+    """Aggregate standard backtest artifacts into one ML performance handoff."""
+
+    summary_rows: list[dict[str, object]] = []
+    yearly_frames: list[pd.DataFrame] = []
+    net_curves: list[tuple[str, pd.DataFrame, float]] = []
+    for model_name, scenarios in model_backtests.items():
+        for scenario, artifacts in scenarios.items():
+            summary = json.loads(
+                artifacts["summary_path"].read_text(encoding="utf-8")
+            )
+            summary_rows.append(
+                {
+                    "model": model_name,
+                    "scenario": scenario,
+                    "total_return": summary.get("total_return"),
+                    "annualized_return": summary.get("overall_annualized_return"),
+                    "average_yearly_annualized_return": summary.get(
+                        "average_yearly_annualized_return"
+                    ),
+                    "annualized_return_mean": summary.get("annualized_return_mean"),
+                    "max_drawdown": summary.get("max_drawdown"),
+                    "sharpe_ratio": summary.get("sharpe_ratio"),
+                    "realized_trade_count": summary.get("realized_trade_count"),
+                    "start_date": summary.get("start_date"),
+                    "end_date": summary.get("end_date"),
+                }
+            )
+            yearly = pd.read_csv(artifacts["yearly_returns_path"])
+            yearly.insert(0, "scenario", scenario)
+            yearly.insert(0, "model", model_name)
+            yearly_frames.append(yearly)
+            if scenario == "net":
+                curve = pd.read_csv(artifacts["equity_curve_path"])
+                net_curves.append(
+                    (model_name, curve, float(summary.get("initial_cash", 0.0)))
+                )
+
+    returns_summary_path = destination / "returns_summary.csv"
+    yearly_returns_path = destination / "yearly_returns.csv"
+    net_equity_curve_html_path = destination / "net_equity_curve.html"
+    _atomic_write_csv(returns_summary_path, pd.DataFrame(summary_rows))
+    yearly_output = (
+        pd.concat(yearly_frames, ignore_index=True)
+        if yearly_frames
+        else pd.DataFrame(
+            columns=(
+                "model",
+                "scenario",
+                "year",
+                "period_start_date",
+                "period_end_date",
+                "trading_days",
+                "start_equity",
+                "end_equity",
+                "total_return",
+                "annualized_return",
+                "is_partial_year",
+            )
+        )
+    )
+    _atomic_write_csv(yearly_returns_path, yearly_output)
+    _write_net_equity_curve_html(net_equity_curve_html_path, net_curves)
+    return {
+        "returns_summary_path": returns_summary_path,
+        "yearly_returns_path": yearly_returns_path,
+        "net_equity_curve_html_path": net_equity_curve_html_path,
+    }
+
+
+def _write_net_equity_curve_html(
+    path: Path,
+    curves: list[tuple[str, pd.DataFrame, float]],
+) -> None:
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        html = (
+            "<html><body><p>plotly is not installed. "
+            "See returns_summary.csv and backtests/*/net/equity_curve.csv.</p></body></html>"
+        )
+        temp = path.with_name(f".{path.name}.tmp")
+        temp.write_text(html, encoding="utf-8")
+        os.replace(temp, path)
+        return
+
+    fig = go.Figure()
+    for model_name, curve, initial_cash in curves:
+        if initial_cash <= 0 or "total_value" not in curve.columns:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=curve["date"],
+                y=pd.to_numeric(curve["total_value"], errors="coerce") / initial_cash,
+                mode="lines",
+                name=model_name,
+                hovertemplate=(
+                    "%{x}<br>net asset value=%{y:.4f}<extra>" + model_name + "</extra>"
+                ),
+            )
+        )
+    fig.update_layout(
+        title="ML Models Net Equity Curves (After Costs)",
+        xaxis_title="Date",
+        yaxis_title="Net Asset Value (Initial = 1.0)",
+        template="plotly_white",
+        hovermode="x unified",
+    )
+    temp = path.with_name(f".{path.name}.tmp")
+    fig.write_html(str(temp), include_plotlyjs="cdn")
+    os.replace(temp, path)
 
 
 def _is_positive(value: object) -> bool:
@@ -500,6 +727,72 @@ def load_factor_selection_file(
     return factors
 
 
+def load_ml_run_config(path: str | Path) -> dict[str, Any]:
+    """Load and validate a dedicated ``fit-multifactor`` YAML file."""
+
+    config_path = Path(path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"ML run config not found: {config_path}")
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"ML run config root must be a mapping: {config_path}")
+    version = payload.get("version")
+    if version != ML_RUN_CONFIG_VERSION:
+        raise ValueError(
+            f"ML run config version must be {ML_RUN_CONFIG_VERSION}: {config_path}"
+        )
+
+    unknown_sections = set(payload).difference({"version", *_ML_RUN_CONFIG_SCHEMA})
+    if unknown_sections:
+        raise ValueError(
+            f"unsupported ML run config sections: {sorted(unknown_sections)}"
+        )
+
+    resolved: dict[str, Any] = {}
+    for section_name, field_map in _ML_RUN_CONFIG_SCHEMA.items():
+        section = payload.get(section_name, {}) or {}
+        if not isinstance(section, dict):
+            raise ValueError(f"ML run config section {section_name!r} must be a mapping")
+        unknown_fields = set(section).difference(field_map)
+        if unknown_fields:
+            raise ValueError(
+                f"unsupported fields in ML run config section {section_name!r}: "
+                f"{sorted(unknown_fields)}"
+            )
+        for yaml_name, value in section.items():
+            destination = field_map[yaml_name]
+            if destination in _ML_LIST_FIELDS:
+                if not isinstance(value, (list, tuple)):
+                    raise ValueError(
+                        f"ML run config field {section_name}.{yaml_name} must be a list"
+                    )
+                value = list(value)
+            resolved[destination] = value
+    return resolved
+
+
+def resolve_run_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Merge YAML settings into parsed CLI args, preserving explicit CLI overrides."""
+
+    if getattr(args, "_ml_run_config_resolved", False) or not getattr(
+        args, "config", None
+    ):
+        return args
+
+    values = vars(args).copy()
+    specified_options = set(getattr(args, "_specified_options", ()))
+    for destination, value in load_ml_run_config(args.config).items():
+        options = _ML_DEST_OPTION_OVERRIDES.get(
+            destination,
+            (f"--{destination.replace('_', '-')}",),
+        )
+        if specified_options.intersection(options):
+            continue
+        values[destination] = value
+    values["_ml_run_config_resolved"] = True
+    return argparse.Namespace(**values)
+
+
 def _atomic_write_csv(path: Path, frame: pd.DataFrame) -> None:
     temp = path.with_name(f".{path.name}.tmp")
     frame.to_csv(temp, index=False)
@@ -513,6 +806,13 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    parser.add_argument(
+        "--config",
+        default=None,
+        help=(
+            "Dedicated ML run YAML; explicit CLI options override matching YAML fields"
+        ),
+    )
     parser.add_argument("--data", default="data/raw")
     parser.add_argument("--metadata", default="config/stocklist.csv")
     parser.add_argument("--benchmark-file", default=None)
@@ -608,11 +908,23 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
-    parser.add_argument(
+    backtest_group = parser.add_mutually_exclusive_group()
+    backtest_group.add_argument(
         "--run-backtests",
+        dest="run_backtests",
         action="store_true",
-        help="Run gross and cost-aware long-only portfolio backtests for every model",
+        help=(
+            "Run gross and cost-aware long-only portfolio backtests for every model "
+            "(default)"
+        ),
     )
+    backtest_group.add_argument(
+        "--skip-backtests",
+        dest="run_backtests",
+        action="store_false",
+        help="Skip portfolio returns, yearly returns, and equity charts",
+    )
+    parser.set_defaults(run_backtests=True)
     parser.add_argument("--backtest-initial-cash", type=float, default=10000000.0)
     parser.add_argument("--backtest-commission-wan", type=float, default=0.8)
     parser.add_argument("--backtest-stamp-tax-rate", type=float, default=0.0005)
@@ -624,6 +936,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
 
 
 def config_from_args(args: argparse.Namespace) -> MultifactorFitConfig:
+    args = resolve_run_args(args)
     factors = list(args.factors)
     if args.factor_selection_file:
         factors.extend(
@@ -680,10 +993,25 @@ def config_from_args(args: argparse.Namespace) -> MultifactorFitConfig:
 
 
 def run_from_args(args: argparse.Namespace) -> WorkflowResult[MultifactorComparisonResult]:
+    args = resolve_run_args(args)
+    fit_config = config_from_args(args)
+    gtja_factors = tuple(
+        factor for factor in fit_config.factors if str(factor).startswith("gtja_")
+    )
+    direction_config = args.factor_config
+    if direction_config is None and gtja_factors:
+        direction_config = (
+            Path(__file__).resolve().parents[1] / "config" / "gtja191_factors.yaml"
+        )
+    factor_directions = (
+        load_gtja_factor_directions(direction_config, gtja_factors)
+        if direction_config and gtja_factors
+        else None
+    )
     return run_multifactor_fit(
         data_dir=args.data,
         output_dir=args.output,
-        config=config_from_args(args),
+        config=fit_config,
         metadata_path=args.metadata,
         benchmark_file=args.benchmark_file,
         style_factor_file=args.style_factor_file,
@@ -694,8 +1022,10 @@ def run_from_args(args: argparse.Namespace) -> WorkflowResult[MultifactorCompari
         factor_name_col=args.factor_name_col,
         factor_value_col=args.factor_value_col,
         factor_selection_file=args.factor_selection_file,
+        factor_directions=factor_directions,
         context_file=args.context_file,
         context_date_col=args.context_date_col,
         context_symbol_col=args.context_symbol_col,
+        run_config_file=args.config,
         force=args.force,
     )

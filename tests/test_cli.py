@@ -4,6 +4,7 @@ from io import StringIO
 from unittest.mock import patch
 
 from scripts import quant_cli as cli
+from rquant.runtime import CommandResult
 
 
 class CliTest(unittest.TestCase):
@@ -182,6 +183,32 @@ class CliTest(unittest.TestCase):
         with patch("scripts.test_factor_batch.run_from_args", return_value=0) as runner:
             cli.cmd_factor_batch(args)
         runner.assert_called_once_with(args)
+
+    def test_factor_run_all_returns_lightweight_command_chain_result(self):
+        args = cli.build_parser().parse_args(["factor-run-all"])
+        expected = CommandResult(
+            outputs={"batch_output": "factor_report/alpha101_batch"},
+            summary={
+                "stages": [
+                    {
+                        "stage": "factor-batch",
+                        "exit_code": 0,
+                        "run_id": "child-batch",
+                        "output_dir": "factor_report/alpha101_batch",
+                    }
+                ]
+            },
+        )
+        with patch(
+            "reports.factor_research_pipeline.run_from_args",
+            return_value=expected,
+        ) as runner:
+            with redirect_stdout(StringIO()):
+                actual = cli.cmd_factor_run_all(args)
+
+        runner.assert_called_once_with(args)
+        self.assertIs(actual, expected)
+
     def test_make_ml_dataset_parser_exposes_lagged_factor_contract(self):
         args = cli.build_parser().parse_args(
             [

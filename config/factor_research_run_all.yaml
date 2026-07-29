@@ -3,10 +3,10 @@ version: 1
 # 选择一个因子库：alpha101、gtja191 或 external。
 # external 还需填写 factor_file，并提供含 categories 映射的 factor_config。
 factor_library:
-  family: alpha101
+  family: gtja191
   data: data/raw
   metadata: config/stocklist.csv
-  factor_config: config/factors.yaml
+  factor_config: config/gtja191_factors.yaml
   factors: [all]
   exclude: []
   ignore_factor_config: false
@@ -43,9 +43,8 @@ correlation:
   min_observations: 20
   min_dates: 20
   high_correlation_threshold: 0.80
-  priority_score_col: preferred_net_sharpe
+  priority_score_col: preferred_gross_sharpe
   priority_window: 20
-  eligibility_col: preferred_profitable_after_cost
 
 machine_learning:
   enabled: true
@@ -66,6 +65,9 @@ machine_learning:
   backtest_lot_size: 100
 
 execution:
-  output: factor_report/factor_run_all/alpha101
   force: false
   require_classification: true
+  # 默认按因子库写入三个正式阶段目录；必要时可分别覆盖：
+  # batch_output: factor_report/alpha101_batch
+  # correlation_output: factor_report/alpha101_correlation
+  # ml_output: data/ml/alpha101_multifactor

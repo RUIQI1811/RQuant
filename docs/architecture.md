@@ -63,18 +63,25 @@ DataManager
 
 ## Factor Research Timing and NAV Boundaries
 
-`reports/factor_research_pipeline.py` is the cross-stage factor-research
-orchestrator exposed as `factor-run-all`. It owns no formulas, metrics, model
-implementations, or portfolio rules. It validates one YAML-selected factor library,
-then calls the existing resumable batch runner, the daily cross-sectional
-correlation/deduplication boundary, and `training/multifactor.py` in that order.
-Its atomic manifest records each stage and preserves the batch, correlation, and ML
-artifacts as separate evidence layers. External libraries must have explicit
-categories before the expensive stages start. The ML stage is fixed to three full
-calendar training years followed by one full test year and always runs gross plus
-cost-aware long-only portfolio backtests; it never sends legacy long-short
-diagnostics to execution. `run_all.py` remains the separate custom-buy daily
-orchestrator and does not import this factor-research pipeline.
+`reports/factor_research_pipeline.py` is a thin command-chain adapter exposed as
+`factor-run-all`, not a fourth research implementation. It launches the governed
+public `factor-batch`, `factor-correlation`, and `fit-multifactor --run-backtests`
+commands in separate Python processes and stops at the first non-zero exit. Each
+child therefore keeps its normal parser, `data/runs/<run-id>` audit record, resume
+contract, and family-scoped output directory. The parent produces no research
+manifest, summary, candidate table, factor metrics, model outputs, or portfolio
+outputs of its own; its governed run record only lists child commands, run IDs,
+exit codes, manifests, and output paths.
+
+External classification validation belongs to the official `factor-batch`
+boundary through `--require-classification`, where a missing-category template is
+written before market-data loading. `factor-correlation` retains representatives
+using same-horizon gross Sharpe, and `factor-run-all` passes its standard
+`deduplicated_factors.csv` directly to `fit-multifactor`; factor-stage costs remain
+reports rather than an ML gate. The ML command is fixed by the chain configuration
+to three full calendar training years followed by one full test year and runs both
+gross and cost-aware long-only portfolio backtests. `run_all.py` remains the
+separate custom-buy daily orchestrator and does not import this factor chain.
 
 Alpha101 batch research applies the lifecycle catalog before calculation. `active`
 factors run first, `watch` factors remain in research but run and rank after active
@@ -88,6 +95,13 @@ public names are `gtja_001` through `gtja_191`, its resumable outputs live under
 series fail explicitly when those point-in-time inputs are absent. GTJA values
 enter the same FactorTester lag and report workflow as Alpha101, but neither family
 is routed into the custom buy-strategy evaluation path.
+
+GTJA lifecycle YAML may also define a `directions` mapping with multipliers limited
+to `-1` and `1`. Direction is a post-formula research transform shared by batch
+evaluation, daily cross-sectional correlation, and ML feature construction; it does
+not rewrite the canonical expressions in `factors/gtja191.py`. The selected mapping
+is recorded in batch manifests and fingerprints, while ML dataset manifests record
+the effective direction for every feature.
 
 `factors/operators.py` is the small shared operator kernel for Alpha101, GTJA191,
 and registered custom factors. It owns only operators with identical tested
@@ -211,11 +225,23 @@ returns remain an explicit diagnostic mode. The output manifest records raw-data
 and implementation signatures plus per-column missing counts; GTJA external series
 remain explicit inputs.
 
+The ML universe is rebuilt on every trading date from finite close observations in
+the raw per-symbol history. Factor values are masked by that exact-date universe
+before the mandatory lag, and cross-sectional transforms preserve missing values.
+Consequently, pre-listing dates and dates after a symbol's final observation cannot
+enter that day's feature ranks, while a subsequently delisted symbol remains in its
+earlier observed history. Features and labels are restricted to the same universe
+keys, and the dataset manifest records annual daily-universe counts. This adapter
+cannot reconstruct delisted symbols absent from `data/raw`; retaining their source
+files is an input requirement for avoiding historical survivorship bias.
+
 `factors/correlation.py` applies the same one-day-lagged, daily
 cross-sectional Spearman/Pearson contract to Alpha101, GTJA191, and validated
 external factor files. The CLI keeps each family's calculator and lifecycle
-configuration separate, then emits one auditable `ml_candidate_factors.csv`
-boundary for downstream walk-forward fitting.
+configuration separate and always emits `deduplicated_factors.csv`. A standalone
+caller may additionally request an eligibility-derived `ml_candidate_factors.csv`;
+the run-all chain deliberately does not, because all deduplicated representatives
+enter downstream walk-forward fitting.
 
 `market/fetch_benchmark.py` is the governed Tushare `index_daily` boundary for
 GTJA factors that explicitly require benchmark open/close. It atomically writes
@@ -265,10 +291,15 @@ open, and preserves the existing fee, lot, suspension, limit, and T+1 behavior.
 The current cohort engine is equal-weight only, so unequal daily signal weights are
 rejected instead of silently discarded.
 
-`fit-multifactor --run-backtests` is an explicit orchestration layer over that
-same public bridge. It runs each model's out-of-sample buy signals once with all
-fees zero and once with configured A-share costs, then records both summaries in
-the ML leaderboard and manifest. It does not introduce a short-signal path.
+`fit-multifactor` uses that same public bridge by default after model fitting. It
+runs each model's out-of-sample buy signals once with all fees zero and once with
+configured A-share costs, then records both summaries in the ML leaderboard and
+manifest. The ML handoff also aggregates total return, compounded annualized
+return, the arithmetic mean of calendar-year annualized returns, per-year return
+rows, and an after-cost multi-model equity chart. Each scenario retains its own
+standard portfolio summary, yearly CSV, equity CSV, and HTML curve. Callers that
+only need prediction diagnostics must opt out with `--skip-backtests`; this layer
+does not introduce a short-signal path.
 
 The factor portfolio uses strict staggered cohort slots: an `h`-day holding period
 owns exactly `h` independently funded sleeves and schedules one sleeve per trading

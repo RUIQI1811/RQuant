@@ -19,6 +19,8 @@ from training.multifactor import (
     config_from_args,
     load_factor_selection_file,
     load_lifecycle_factors,
+    load_ml_run_config,
+    resolve_run_args,
     run_multifactor_fit,
 )
 from training.train_walk_forward import WalkForwardTrainingConfig, run_walk_forward_training
@@ -29,6 +31,164 @@ from domain.research import MLDatasetResult, ModelFitResult, MultifactorComparis
 
 
 class MLDatasetTest(unittest.TestCase):
+    def test_multifactor_yaml_config_loads_and_cli_overrides(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ml.yaml"
+            config_path.write_text(
+                "version: 1\n"
+                "inputs:\n"
+                "  data: yaml/raw\n"
+                "features:\n"
+                "  names: [alpha_040, custom_002]\n"
+                "training:\n"
+                "  models: [ridge, elasticnet]\n"
+                "  target_window: 10\n"
+                "backtest:\n"
+                "  enabled: false\n"
+                "execution:\n"
+                "  output: yaml/output\n",
+                encoding="utf-8",
+            )
+            parser = argparse.ArgumentParser()
+            add_multifactor_arguments(parser)
+            args = parser.parse_args(
+                ["--config", str(config_path), "--models", "ridge"]
+            )
+            args._specified_options = frozenset({"--config", "--models"})
+            resolved = resolve_run_args(args)
+            config = config_from_args(resolved)
+
+            self.assertEqual(load_ml_run_config(config_path)["data"], "yaml/raw")
+            self.assertEqual(resolved.data, "yaml/raw")
+            self.assertEqual(resolved.output, "yaml/output")
+            self.assertEqual(config.factors, ("alpha_040", "custom_002"))
+            self.assertEqual(config.models, ("ridge",))
+            self.assertEqual(config.target_window, 10)
+            self.assertFalse(config.run_backtests)
+
+    def test_multifactor_yaml_config_rejects_unknown_fields(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "ml.yaml"
+            config_path.write_text(
+                "version: 1\ntraining:\n  modelz: [ridge]\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unsupported fields"):
+                load_ml_run_config(config_path)
+
+    def test_dataset_uses_daily_point_in_time_listing_universe(self):
+        dates = pd.bdate_range("2025-01-02", periods=6)
+        histories = {
+            "000001": dates[:3],
+            "000002": dates,
+            "000003": dates[3:],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "raw"
+            output_dir = root / "dataset"
+            factor_path = root / "external_factors.csv"
+            data_dir.mkdir()
+            for symbol_index, (symbol, symbol_dates) in enumerate(histories.items()):
+                day = np.arange(len(symbol_dates), dtype=float)
+                close = 10.0 + symbol_index * 2.0 + day * 0.1
+                pd.DataFrame(
+                    {
+                        "date": symbol_dates,
+                        "open": close - 0.05,
+                        "close": close,
+                        "high": close + 0.1,
+                        "low": close - 0.1,
+                        "volume": 1_000_000 + symbol_index * 100_000,
+                    }
+                ).to_csv(data_dir / f"{symbol}.csv", index=False)
+
+            pd.DataFrame(
+                [
+                    {
+                        "date": date,
+                        "symbol": symbol,
+                        "external_a": float(symbol_index + 1),
+                    }
+                    for date in dates
+                    for symbol_index, symbol in enumerate(histories)
+                ]
+            ).to_csv(factor_path, index=False)
+
+            outputs = build_ml_dataset(
+                data_dir=data_dir,
+                output_dir=output_dir,
+                factor_file=factor_path,
+                config=MLDatasetConfig(
+                    factors=("external_a",),
+                    target_windows=(1,),
+                    factor_lag_days=1,
+                    feature_transform="rank",
+                    target_transform="rank",
+                ),
+            )
+            features = pd.read_csv(outputs["features_path"], dtype={"symbol": str})
+            labels = pd.read_csv(outputs["labels_path"], dtype={"symbol": str})
+            manifest = json.loads(
+                outputs["manifest_path"].read_text(encoding="utf-8")
+            )
+
+        symbols_by_date = features.groupby("date")["symbol"].apply(list).to_dict()
+        for date in dates[:3]:
+            self.assertEqual(
+                symbols_by_date[str(date.date())],
+                ["000001", "000002"],
+            )
+        for date in dates[3:]:
+            self.assertEqual(
+                symbols_by_date[str(date.date())],
+                ["000002", "000003"],
+            )
+
+        first_new_row = features[
+            (features["date"] == str(dates[3].date()))
+            & (features["symbol"] == "000003")
+        ].iloc[0]
+        self.assertTrue(pd.isna(first_new_row["external_a"]))
+        ranked_after_listing = features[
+            features["date"] == str(dates[4].date())
+        ].set_index("symbol")["external_a"]
+        self.assertEqual(
+            ranked_after_listing.to_dict(),
+            {"000002": 0.5, "000003": 1.0},
+        )
+
+        delisting_tail = labels[
+            (labels["date"] == str(dates[1].date()))
+            & (labels["symbol"] == "000001")
+        ].iloc[0]
+        self.assertTrue(pd.isna(delisting_tail["next_open_return_1d"]))
+        self.assertTrue(pd.isna(delisting_tail["next_open_return_1d_cs_rank"]))
+        self.assertEqual(len(features), 12)
+        self.assertEqual(len(labels), 12)
+        self.assertEqual(
+            manifest["point_in_time_universe"]["method"],
+            "finite_close_observation_on_exact_date",
+        )
+        self.assertTrue(
+            manifest["point_in_time_universe"]["factor_values_masked_before_lag"]
+        )
+        self.assertEqual(
+            manifest["point_in_time_universe"]["yearly_counts"],
+            [
+                {
+                    "year": 2025,
+                    "trading_dates": 6,
+                    "eligible_rows": 12,
+                    "min_symbols": 2,
+                    "median_symbols": 2.0,
+                    "max_symbols": 2,
+                }
+            ],
+        )
+
     def test_multifactor_imports_active_lifecycle_factors(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "gtja191_factors.yaml"
@@ -77,6 +237,11 @@ class MLDatasetTest(unittest.TestCase):
             self.assertEqual(config_from_args(args).mlp_epochs, 10)
             self.assertEqual(config_from_args(args).elasticnet_alpha, 0.001)
             self.assertEqual(config_from_args(args).elasticnet_l1_ratio, 0.5)
+            self.assertTrue(config_from_args(args).run_backtests)
+            skip_args = parser.parse_args(
+                ["--factors", "alpha_040", "--skip-backtests"]
+            )
+            self.assertFalse(config_from_args(skip_args).run_backtests)
             self.assertFalse(hasattr(args, "no_progress"))
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args(["--factors", "alpha_040", "--no-progress"])
@@ -197,6 +362,15 @@ class MLDatasetTest(unittest.TestCase):
             profitable_models_exists = (
                 multifactor_dir / "profitable_models.csv"
             ).exists()
+            returns_summary = pd.read_csv(
+                multifactor_outputs["returns_summary_path"]
+            )
+            yearly_returns = pd.read_csv(
+                multifactor_outputs["yearly_returns_path"]
+            )
+            net_equity_curve_exists = multifactor_outputs[
+                "net_equity_curve_html_path"
+            ].exists()
 
         self.assertEqual(features["symbol"].str.len().unique().tolist(), [6])
         self.assertEqual(
@@ -226,7 +400,17 @@ class MLDatasetTest(unittest.TestCase):
         self.assertTrue(gross_summary_exists)
         self.assertTrue(net_summary_exists)
         self.assertTrue(profitable_models_exists)
+        self.assertTrue(net_equity_curve_exists)
+        self.assertEqual(
+            returns_summary[["model", "scenario"]].values.tolist(),
+            [["ridge", "gross"], ["ridge", "net"]],
+        )
+        self.assertIn("annualized_return", returns_summary.columns)
+        self.assertIn("average_yearly_annualized_return", returns_summary.columns)
+        self.assertEqual(set(yearly_returns["scenario"]), {"gross", "net"})
+        self.assertIn("is_partial_year", yearly_returns.columns)
         self.assertEqual(leaderboard.loc[0, "backtest_status"], "success")
+        self.assertIn("net_average_yearly_annualized_return", leaderboard.columns)
         self.assertGreaterEqual(
             leaderboard.loc[0, "gross_total_return"],
             leaderboard.loc[0, "net_total_return"],
@@ -234,6 +418,11 @@ class MLDatasetTest(unittest.TestCase):
         self.assertIn("backtests", multifactor_manifest["models"]["ridge"])
         self.assertEqual(
             multifactor_manifest["profitable_models"], "profitable_models.csv"
+        )
+        self.assertTrue(
+            multifactor_manifest["performance"]["net_equity_curve_html_path"].endswith(
+                "net_equity_curve.html"
+            )
         )
         logs = "\n".join(captured_logs.output)
         self.assertIn("Starting multi-factor fit", logs)

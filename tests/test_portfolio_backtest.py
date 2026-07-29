@@ -8,6 +8,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from backtest import portfolio as portfolio_backtest
+from backtest.performance import annualized_return, yearly_return_rows
 from backtest.portfolio import (
     FeeModel,
     PortfolioSettings,
@@ -165,13 +166,44 @@ class PortfolioBacktestTest(unittest.TestCase):
             {"basket_return": 0.10},
         ]
 
-        metrics = calculate_risk_metrics(equity_rows=equity_rows, trades=trades)
+        metrics = calculate_risk_metrics(
+            equity_rows=equity_rows,
+            trades=trades,
+            initial_cash=100000.0,
+        )
 
         self.assertAlmostEqual(metrics["max_drawdown"], 0.25)
         self.assertGreater(metrics["annualized_volatility"], 0)
         self.assertAlmostEqual(
             metrics["sharpe_ratio"],
             metrics["annualized_return_mean"] / metrics["annualized_volatility"],
+        )
+        self.assertAlmostEqual(
+            metrics["overall_annualized_return"],
+            annualized_return(-0.01, 4),
+        )
+        self.assertEqual(metrics["year_count"], 1)
+
+    def test_yearly_returns_keep_prior_year_end_as_next_year_baseline(self):
+        rows = yearly_return_rows(
+            [
+                {"date": "2025-06-30", "total_value": 100.0},
+                {"date": "2025-12-31", "total_value": 110.0},
+                {"date": "2026-01-02", "total_value": 121.0},
+                {"date": "2026-12-31", "total_value": 133.1},
+            ],
+            initial_cash=100.0,
+        )
+
+        self.assertEqual([row["year"] for row in rows], [2025, 2026])
+        self.assertAlmostEqual(rows[0]["total_return"], 0.10)
+        self.assertTrue(rows[0]["is_partial_year"])
+        self.assertAlmostEqual(rows[1]["start_equity"], 110.0)
+        self.assertAlmostEqual(rows[1]["total_return"], 0.21)
+        self.assertFalse(rows[1]["is_partial_year"])
+        self.assertAlmostEqual(
+            rows[1]["annualized_return"],
+            annualized_return(0.21, 2),
         )
 
     def test_realistic_portfolio_buys_next_day_and_sells_after_hold_days(self):

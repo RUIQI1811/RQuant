@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from factors.correlation import (
     FactorCorrelationConfig,
@@ -17,9 +18,45 @@ from reports.alpha101_batch import build_forward_return_frame
 from reports.external_factor_batch import run_external_factor_batch
 from reports.factor_tester import FactorTesterConfig
 from training.build_dataset import MLDatasetConfig, build_ml_dataset
+from scripts.test_factor_batch import build_parser as build_factor_batch_parser
+from scripts.test_factor_batch import run_from_args as run_factor_batch_from_args
 
 
 class ExternalFactorTests(unittest.TestCase):
+    def test_official_factor_batch_requires_external_classification_on_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            factor_path = root / "external.csv"
+            pd.DataFrame(
+                {
+                    "date": ["2026-01-02", "2026-01-02"],
+                    "symbol": ["000001", "000002"],
+                    "factor_a": [1.0, 2.0],
+                    "factor_b": [2.0, 1.0],
+                }
+            ).to_csv(factor_path, index=False)
+            output = root / "batch"
+            args = build_factor_batch_parser().parse_args(
+                [
+                    "--family",
+                    "external",
+                    "--factor-file",
+                    str(factor_path),
+                    "--require-classification",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            with self.assertRaisesRegex(ValueError, "missing research categories"):
+                run_factor_batch_from_args(args)
+
+            template = output / "factor_classification_template.yaml"
+            self.assertTrue(template.exists())
+            payload = yaml.safe_load(template.read_text(encoding="utf-8"))
+            self.assertEqual(payload["categories"]["factor_a"], "unclassified")
+            self.assertEqual(payload["factors"]["factor_b"], "active")
+
     def test_point_in_time_context_populates_dynamic_cap_and_industry(self):
         dates = pd.bdate_range("2026-01-02", periods=2)
         raw = {

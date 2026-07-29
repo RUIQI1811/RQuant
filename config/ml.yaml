@@ -1,0 +1,73 @@
+version: 1
+
+# 运行方式：python -m rquant fit-multifactor --config config/ml.yaml
+# 相对路径均相对项目根目录。命令行显式参数会覆盖同名 YAML 配置。
+inputs:
+  data: data/raw
+  metadata: config/stocklist.csv
+  benchmark_file: null
+  style_factor_file: null
+  factor_file: null
+  factor_layout: auto
+  factor_date_col: date
+  factor_symbol_col: symbol
+  factor_name_col: factor
+  factor_value_col: factor_value
+  context_file: null
+  context_date_col: date
+  context_symbol_col: symbol
+
+features:
+  # names 可放显式因子；这里默认从生命周期 YAML 导入全部 watch 因子。
+  names: []
+  lifecycle_config: config/gtja191_factors.yaml
+  lifecycle_statuses: [watch]
+  selection_file: null
+  selection_col: factor
+
+training:
+  # 可选：ridge、elasticnet、lightgbm、doubleensemble、mlp。
+  # 默认先跑两个较快且不需要可选 ML 后端的模型。
+  models: [ridge, elasticnet]
+  target_window: 20
+  label_mode: next_open
+  feature_transform: rank
+  target_transform: rank
+  window_mode: calendar-years
+  train_years: 3
+  test_years: 1
+  train_size: 504
+  test_size: 21
+  purge_days: null
+  signal_top_n: 10
+  random_state: 42
+  start_date: "2013-01-01"
+  end_date: null
+
+model_parameters:
+  ridge_alpha: 1.0
+  elasticnet_alpha: 0.001
+  elasticnet_l1_ratio: 0.5
+  lightgbm_estimators: 200
+  lightgbm_n_jobs: 1
+  qlib_valid_ratio: 0.2
+  doubleensemble_num_models: 6
+  mlp_hidden_sizes: [64, 32]
+  mlp_epochs: 10
+  mlp_batch_size: 256
+  mlp_learning_rate: 0.001
+  mlp_weight_decay: 0.0
+  mlp_dropout: 0.0
+  device: auto
+
+backtest:
+  enabled: true
+  initial_cash: 10000000
+  commission_wan: 0.8
+  stamp_tax_rate: 0.0005
+  transfer_fee_rate: 0.00001
+  lot_size: 100
+
+execution:
+  force: false
+  output: data/ml/multifactor

@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from datetime import date as calendar_date
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,7 @@ import factors.external as external_module
 import labels.make_forward_return as labels_module
 from factors.alpha101 import Alpha101, build_alpha101_panels, normalize_alpha_name
 from factors.custom import CustomFactors, normalize_custom_factor_name
+from factors.directions import load_gtja_factor_directions
 from factors.gtja191 import GTJA191, build_gtja191_panels, normalize_gtja_name
 from factors.external import (
     load_external_factor_file,
@@ -105,6 +106,7 @@ def build_ml_dataset(
     context_file: str | Path | None = None,
     context_date_col: str = "date",
     context_symbol_col: str = "symbol",
+    factor_directions: Mapping[str, int] | None = None,
 ) -> WorkflowResult[MLDatasetResult]:
     """Calculate one-day-lagged factor features plus point-in-time labels."""
 
@@ -152,8 +154,15 @@ def build_ml_dataset(
         len(dates),
         len(symbols),
     )
-    features = _panel_to_long(base_panels.close, "_base").select("date", "symbol")
+    observed_market = _finite_panel_mask(base_panels.close)
+    universe_keys = (
+        _panel_to_long(base_panels.close.where(observed_market), "_base")
+        .drop_nulls("_base")
+        .select("date", "symbol")
+    )
+    features = universe_keys
     factor_sources: dict[str, str] = {}
+    normalized_directions = _normalize_factor_directions(factor_directions)
     for position, factor in enumerate(config.factors, start=1):
         factor_started = time.perf_counter()
         logger.info("[%d/%d] Calculating factor %s", position, len(config.factors), factor)
@@ -184,12 +193,14 @@ def build_ml_dataset(
             raise ValueError(
                 f"unsupported factor family or missing external factor column: {factor}"
             )
+        values = values * normalized_directions.get(factor, 1)
         lagged = (
             values.reindex(index=dates, columns=symbols)
+            .where(observed_market)
             .shift(config.factor_lag_days)
         )
         features = features.join(
-            _panel_to_long(lagged, factor),
+            _panel_to_long(lagged, factor).drop_nulls(factor),
             on=["date", "symbol"],
             how="left",
         )
@@ -218,6 +229,15 @@ def build_ml_dataset(
         price_frame = _panel_to_long(base_panels.close, "close").drop_nulls("close")
         label_frame = make_forward_returns(price_frame, windows=config.target_windows)
         label_columns = [f"forward_return_{window}d" for window in config.target_windows]
+    label_frame = (
+        label_frame.with_columns(
+            pl.col("date")
+            .cast(pl.String)
+            .str.slice(0, 10)
+            .str.to_date("%Y-%m-%d", strict=False)
+        )
+        .join(universe_keys, on=["date", "symbol"], how="inner")
+    )
 
     transformed_label_columns: list[str] = []
     if config.target_transform != "raw":
@@ -286,6 +306,11 @@ def build_ml_dataset(
         },
         "feature_rows": len(feature_frame),
         "label_rows": len(label_frame),
+        "point_in_time_universe": {
+            "method": "finite_close_observation_on_exact_date",
+            "factor_values_masked_before_lag": True,
+            "yearly_counts": _universe_by_year(feature_frame),
+        },
         "factor_missing_rows": factor_missing,
         "label_missing_rows": label_missing,
         "target_columns": {
@@ -293,6 +318,10 @@ def build_ml_dataset(
             "fitted": transformed_label_columns or label_columns,
         },
         "factor_sources": factor_sources,
+        "factor_directions": {
+            factor: normalized_directions.get(factor, 1)
+            for factor in config.factors
+        },
         "date_range": {
             "start": feature_frame["date"].min() if not feature_frame.is_empty() else None,
             "end": feature_frame["date"].max() if not feature_frame.is_empty() else None,
@@ -342,6 +371,21 @@ def _normalize_factor_name(value: object) -> str:
     return normalize_external_factor_name(raw_name)
 
 
+def _normalize_factor_directions(
+    directions: Mapping[str, int] | None,
+) -> dict[str, int]:
+    normalized: dict[str, int] = {}
+    for raw_name, raw_direction in (directions or {}).items():
+        name = _normalize_factor_name(raw_name)
+        if isinstance(raw_direction, bool) or raw_direction not in (-1, 1):
+            raise ValueError(f"factor direction for {name} must be -1 or 1")
+        direction = int(raw_direction)
+        if name in normalized and normalized[name] != direction:
+            raise ValueError(f"conflicting factor directions configured for {name}")
+        normalized[name] = direction
+    return normalized
+
+
 def _filter_dates(frame: pl.DataFrame, config: MLDatasetConfig) -> pl.DataFrame:
     result = frame.with_columns(
         pl.col("date")
@@ -366,7 +410,7 @@ def _cross_sectional_transform(
 
     result = frame.clone()
     for column in columns:
-        numeric = pl.col(column).cast(pl.Float64, strict=False)
+        numeric = _finite_float_expr(column)
         if transform == "rank":
             count = numeric.count().over("date")
             result = result.with_columns(
@@ -376,7 +420,9 @@ def _cross_sectional_transform(
             mean = numeric.mean().over("date")
             scale = numeric.std().over("date")
             result = result.with_columns(
-                pl.when(scale > 1e-12)
+                pl.when(numeric.is_null())
+                .then(None)
+                .when(scale > 1e-12)
                 .then((numeric - mean) / scale)
                 .otherwise(0.0)
                 .alias(column)
@@ -428,8 +474,45 @@ def _panel_to_long(panel: pd.DataFrame, name: str) -> pl.DataFrame:
     return (
         to_polars(data)
         .unpivot(index="date", variable_name="symbol", value_name=name)
-        .with_columns(pl.col("date").str.to_date("%Y-%m-%d", strict=False))
+        .with_columns(
+            pl.col("date").str.to_date("%Y-%m-%d", strict=False),
+            _finite_float_expr(name).alias(name),
+        )
         .sort(["date", "symbol"], maintain_order=True)
+    )
+
+
+def _finite_float_expr(column: str) -> pl.Expr:
+    numeric = pl.col(column).cast(pl.Float64, strict=False)
+    return pl.when(numeric.is_finite()).then(numeric).otherwise(None)
+
+
+def _finite_panel_mask(panel: pd.DataFrame) -> pd.DataFrame:
+    numeric = panel.apply(pd.to_numeric, errors="coerce")
+    return numeric.notna() & np.isfinite(numeric)
+
+
+def _universe_by_year(frame: pl.DataFrame) -> list[dict[str, int | float]]:
+    if frame.is_empty():
+        return []
+    daily = (
+        frame.group_by("date")
+        .agg(pl.len().alias("symbol_count"))
+        .with_columns(
+            pl.col("date").cast(pl.String).str.slice(0, 4).cast(pl.Int32).alias("year")
+        )
+    )
+    return (
+        daily.group_by("year")
+        .agg(
+            pl.len().alias("trading_dates"),
+            pl.col("symbol_count").sum().alias("eligible_rows"),
+            pl.col("symbol_count").min().alias("min_symbols"),
+            pl.col("symbol_count").median().alias("median_symbols"),
+            pl.col("symbol_count").max().alias("max_symbols"),
+        )
+        .sort("year")
+        .to_dicts()
     )
 
 
@@ -518,6 +601,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument("--factor-name-col", default="factor")
     parser.add_argument("--factor-value-col", default="factor_value")
     parser.add_argument(
+        "--factor-config",
+        default=None,
+        help=(
+            "Optional lifecycle YAML supplying GTJA direction multipliers; "
+            "GTJA features default to config/gtja191_factors.yaml"
+        ),
+    )
+    parser.add_argument(
         "--context-file",
         default=None,
         help="Optional point-in-time date,symbol market-cap/classification/regime CSV",
@@ -564,10 +655,24 @@ def config_from_args(args: argparse.Namespace) -> MLDatasetConfig:
 
 
 def run_from_args(args: argparse.Namespace) -> WorkflowResult[MLDatasetResult]:
+    config = config_from_args(args)
+    gtja_factors = tuple(
+        factor for factor in config.factors if str(factor).startswith("gtja_")
+    )
+    direction_config = args.factor_config
+    if direction_config is None and gtja_factors:
+        direction_config = (
+            Path(__file__).resolve().parents[1] / "config" / "gtja191_factors.yaml"
+        )
+    factor_directions = (
+        load_gtja_factor_directions(direction_config, gtja_factors)
+        if direction_config and gtja_factors
+        else None
+    )
     return build_ml_dataset(
         data_dir=args.data,
         output_dir=args.output,
-        config=config_from_args(args),
+        config=config,
         metadata_path=args.metadata,
         benchmark_file=args.benchmark_file,
         style_factor_file=args.style_factor_file,
@@ -580,6 +685,7 @@ def run_from_args(args: argparse.Namespace) -> WorkflowResult[MLDatasetResult]:
         context_file=args.context_file,
         context_date_col=args.context_date_col,
         context_symbol_col=args.context_symbol_col,
+        factor_directions=factor_directions,
     )
 
 

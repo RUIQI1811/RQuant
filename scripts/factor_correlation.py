@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from factors.alpha101 import build_alpha101_panels, normalize_alpha_name  # noqa: E402
 from factors.catalog import FactorCatalog, load_factor_catalog  # noqa: E402
+from factors.directions import load_gtja_factor_directions  # noqa: E402
 from factors.correlation import (  # noqa: E402
     FactorCorrelationConfig,
     calculate_external_factor_correlations,
@@ -162,6 +163,7 @@ def run_from_args(
         _argument_error(parser, "--family external requires --factor-file")
     catalog: FactorCatalog | None = None
     gtja_statuses: dict[str, str] | None = None
+    gtja_directions: dict[str, int] | None = None
     external = None
     if family == "external":
         requested_external = None
@@ -186,6 +188,10 @@ def run_from_args(
         try:
             requested = parse_gtja_selection(args.factors, args.exclude)
             gtja_statuses = _load_gtja_statuses(factor_config)
+            gtja_directions = load_gtja_factor_directions(
+                factor_config,
+                GTJA191_NAMES,
+            )
             factors = (
                 requested
                 if args.ignore_factor_config
@@ -328,6 +334,7 @@ def run_from_args(
                 factors,
                 config=config,
                 factor_statuses=gtja_statuses,
+                factor_directions=gtja_directions,
                 priority_scores=priority_scores,
             )
         else:

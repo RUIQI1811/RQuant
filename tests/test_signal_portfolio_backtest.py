@@ -65,6 +65,7 @@ class UnifiedSignalPortfolioBacktestTest(unittest.TestCase):
 
             summary = json.loads((output_dir / "portfolio_summary.json").read_text(encoding="utf-8"))
             trades = pd.read_csv(output_dir / "portfolio_trades.csv", dtype={"code": str})
+            yearly_returns = pd.read_csv(output_dir / "yearly_returns.csv")
 
         self.assertEqual(summary["signal_source_filter"], "model_ridge")
         self.assertEqual(summary["signal_count"], 2)
@@ -72,8 +73,12 @@ class UnifiedSignalPortfolioBacktestTest(unittest.TestCase):
         self.assertEqual(summary["max_positions_per_cohort"], 1)
         self.assertEqual(summary["stamp_tax_rate"], 0.0005)
         self.assertEqual(summary["transfer_fee_rate"], 0.00001)
+        self.assertIn("overall_annualized_return", summary)
+        self.assertIn("average_yearly_annualized_return", summary)
+        self.assertEqual(yearly_returns["year"].tolist(), [2026])
         self.assertGreater(len(trades), 0)
         self.assertEqual(Path(outputs["equity_curve_html_path"]).name, "equity_curve.html")
+        self.assertEqual(Path(outputs["yearly_returns_path"]).name, "yearly_returns.csv")
 
 
 if __name__ == "__main__":

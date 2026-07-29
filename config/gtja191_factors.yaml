@@ -9,7 +9,8 @@
 # powers, opaque nested ranks, and external-data expressions without a clear
 # stock-selection mechanism remain disabled until they have both a documented
 # economic hypothesis and an out-of-sample long-only validation.
-default_status: disabled
+default_status: watch
+default_direction: 1
 factors:
   # Price location, trend/reversal and volatility hypotheses.
   gtja_012: watch
@@ -36,6 +37,117 @@ factors:
   gtja_144: watch
   gtja_168: watch
   gtja_184: watch
+
+# Research-value direction snapshot, generated on 2026-07-29 from the comparable
+# full-sample reports under factor_report/gtja191_batch. A factor is -1 only when
+# mean(rank_ic_mean_10d, rank_ic_mean_20d) < 0 in the 8,902,245-row cohort.
+# Original GTJA191 formulas remain unchanged; batch, correlation, and ML multiply
+# the calculated panel by this direction before ranking or fitting.
+directions:
+  gtja_003: -1
+  gtja_009: -1
+  gtja_010: -1
+  gtja_011: -1
+  gtja_014: -1
+  gtja_018: -1
+  gtja_019: -1
+  gtja_020: -1
+  gtja_021: -1
+  gtja_022: -1
+  gtja_023: -1
+  gtja_024: -1
+  gtja_027: -1
+  gtja_028: -1
+  gtja_029: -1
+  gtja_031: -1
+  gtja_036: -1
+  gtja_040: -1
+  gtja_043: -1
+  gtja_044: -1
+  gtja_045: -1
+  gtja_050: -1
+  gtja_051: -1
+  gtja_052: -1
+  gtja_053: -1
+  gtja_055: -1
+  gtja_057: -1
+  gtja_058: -1
+  gtja_059: -1
+  gtja_060: -1
+  gtja_063: -1
+  gtja_066: -1
+  gtja_067: -1
+  gtja_068: -1
+  gtja_069: -1
+  gtja_070: -1
+  gtja_071: -1
+  gtja_074: -1
+  gtja_076: -1
+  gtja_078: -1
+  gtja_079: -1
+  gtja_080: -1
+  gtja_081: -1
+  gtja_084: -1
+  gtja_088: -1
+  gtja_089: -1
+  gtja_091: -1
+  gtja_093: -1
+  gtja_094: -1
+  gtja_095: -1
+  gtja_096: -1
+  gtja_097: -1
+  gtja_100: -1
+  gtja_102: -1
+  gtja_106: -1
+  gtja_107: -1
+  gtja_109: -1
+  gtja_110: -1
+  gtja_112: -1
+  gtja_116: -1
+  gtja_118: -1
+  gtja_122: -1
+  gtja_124: -1
+  gtja_126: -1
+  gtja_127: -1
+  gtja_128: -1
+  gtja_129: -1
+  gtja_131: -1
+  gtja_132: -1
+  gtja_133: -1
+  gtja_134: -1
+  gtja_135: -1
+  gtja_137: -1
+  gtja_142: -1
+  gtja_143: -1
+  gtja_145: -1
+  gtja_146: -1
+  gtja_147: -1
+  gtja_150: -1
+  gtja_151: -1
+  gtja_152: -1
+  gtja_153: -1
+  gtja_155: -1
+  gtja_158: -1
+  gtja_159: -1
+  gtja_160: -1
+  gtja_161: -1
+  gtja_162: -1
+  gtja_167: -1
+  gtja_169: -1
+  gtja_171: -1
+  gtja_172: -1
+  gtja_173: -1
+  gtja_174: -1
+  gtja_175: -1
+  gtja_176: -1
+  gtja_177: -1
+  gtja_178: -1
+  gtja_179: -1
+  gtja_186: -1
+  gtja_187: -1
+  gtja_188: -1
+  gtja_189: -1
+  gtja_191: -1
 
 categories:
   gtja_012: price_behavior

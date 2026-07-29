@@ -759,16 +759,18 @@ def cmd_factor_correlation(args: argparse.Namespace) -> None:
     )
 
 
-def cmd_factor_run_all(args: argparse.Namespace) -> WorkflowResult:
+def cmd_factor_run_all(args: argparse.Namespace) -> CommandResult:
     from reports.factor_research_pipeline import run_from_args
 
-    outputs = run_from_args(args)
-    print("\nFactor research run-all complete")
-    for name, path in outputs.items():
-        if name == "result":
-            continue
-        print(f"{name}: {path}")
-    return outputs
+    result = run_from_args(args)
+    label = "complete" if result.exit_code == 0 else "failed"
+    print(f"\nFactor research command chain {label}")
+    for stage in result.summary.get("stages", []):
+        print(
+            f"{stage['stage']}: exit={stage['exit_code']} "
+            f"run_id={stage['run_id']} output={stage['output_dir']}"
+        )
+    return result
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -1284,7 +1286,7 @@ def build_parser(*, prog: str = "scripts.quant_cli") -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "factor-run-all",
-        help="Run factor evaluation, correlation deduplication, and 3y-to-1y long-only ML",
+        help="Run the governed factor-batch, factor-correlation, and fit-multifactor commands",
     )
     add_factor_run_all_arguments(p)
 
@@ -1388,8 +1390,14 @@ def execute(
     *,
     prog: str = "scripts.quant_cli",
 ) -> CommandResult:
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = build_parser(prog=prog)
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    args = parser.parse_args(raw_argv)
+    args._specified_options = frozenset(
+        token.partition("=")[0]
+        for token in raw_argv
+        if token.startswith("--")
+    )
     return dispatch(args)
 
 

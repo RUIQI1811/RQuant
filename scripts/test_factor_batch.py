@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from reports.gtja191_batch import (  # noqa: E402
 import factors.operators as factor_operators  # noqa: E402
 from factors.alpha101 import ALPHA101_NAMES, Alpha101, build_alpha101_panels  # noqa: E402
 from factors.catalog import FactorCatalog, load_factor_catalog  # noqa: E402
+from factors.directions import load_gtja_factor_directions  # noqa: E402
 from factors.external import (  # noqa: E402
     load_external_factor_file,
     load_research_context_file,
@@ -173,6 +175,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         help=f"YAML lifecycle config; defaults to {ALPHA101_FACTOR_CONFIG} or {GTJA191_FACTOR_CONFIG}",
     )
     parser.add_argument(
+        "--require-classification",
+        action="store_true",
+        help=(
+            "External factors only: fail before market-data loading when a selected "
+            "factor is unclassified, and write factor_classification_template.yaml"
+        ),
+    )
+    parser.add_argument(
         "--ignore-factor-config",
         action="store_true",
         help="Temporarily run the requested factors regardless of configured status",
@@ -275,6 +285,32 @@ def _external_catalog(
         statuses[factor] = status
         categories[factor] = str(category or "unclassified").strip()
     return statuses, categories
+
+
+def _write_external_classification_template(
+    output_dir: str | Path,
+    factors: tuple[str, ...],
+    statuses: dict[str, str],
+    categories: dict[str, str],
+) -> Path:
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / "factor_classification_template.yaml"
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(
+        yaml.safe_dump(
+            {
+                "default_status": "active",
+                "factors": {factor: statuses[factor] for factor in factors},
+                "categories": {factor: categories[factor] for factor in factors},
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+    return path
 
 
 def _context_from_args(args: argparse.Namespace) -> pd.DataFrame | None:
@@ -448,10 +484,14 @@ def _run_gtja191(
         _argument_error(parser, str(exc))
     statuses = _gtja_factor_statuses(factor_config, factors)
     categories = _gtja_factor_categories(factor_config, GTJA191_NAMES)
+    try:
+        directions = load_gtja_factor_directions(factor_config, GTJA191_NAMES)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        _argument_error(parser, str(exc))
     if args.list_factor_status:
-        print("factor,status,category")
+        print("factor,status,category,direction")
         for factor, status in statuses.items():
-            print(f"{factor},{status},{categories[factor]}")
+            print(f"{factor},{status},{categories[factor]},{directions[factor]}")
         return 0
     if not args.ignore_factor_config:
         factors = tuple(name for name in factors if statuses[name] in ("active", "watch"))
@@ -540,6 +580,7 @@ def _run_gtja191(
         implementation_signature=implementation_signature,
         factor_statuses={normalize_gtja_name(name): status for name, status in statuses.items()},
         factor_categories=categories,
+        factor_directions=directions,
     ).run()
     counts = result.status["status"].value_counts().to_dict()
     print(f"GTJA191 batch report: {result.output_dir}")
@@ -589,6 +630,26 @@ def _run_external(
         )
     if not factors:
         _argument_error(parser, "external factor selection is empty after filtering")
+    output = args.output or "factor_report/external_batch"
+    if args.require_classification:
+        missing = tuple(
+            factor
+            for factor in factors
+            if not categories[factor]
+            or categories[factor].strip().lower() == "unclassified"
+        )
+        if missing:
+            template = _write_external_classification_template(
+                output,
+                factors,
+                statuses,
+                categories,
+            )
+            _argument_error(
+                parser,
+                f"{len(missing)} external factors are missing research categories; "
+                f"complete {template} and rerun factor-batch",
+            )
     if args.max_symbols is not None and args.max_symbols <= 0:
         _argument_error(parser, "--max-symbols must be positive")
 
@@ -624,7 +685,6 @@ def _run_external(
         )
     metadata_path = Path(args.metadata) if args.metadata else None
     metadata = _optional_metadata(metadata_path)
-    output = args.output or "factor_report/external_batch"
     tester_config = FactorTesterConfig(
         industry_col=args.industry_col,
         market_cap_col=args.market_cap_col,

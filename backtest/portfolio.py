@@ -24,6 +24,7 @@ from domain.execution import (
     Trade,
 )
 from domain.signals import Signal, SignalBook
+from backtest.performance import annualized_return, yearly_return_rows
 
 from reports.signal_returns import (
     BUY_MODE_NEXT_OPEN,
@@ -248,6 +249,7 @@ def calculate_risk_metrics(
     equity_rows: List[dict],
     trades: List[dict],
     annualization_days: int = ANNUALIZATION_DAYS,
+    initial_cash: float | None = None,
 ) -> dict:
     max_drawdown = 0.0
     peak = None
@@ -290,9 +292,39 @@ def calculate_risk_metrics(
             else None
         )
 
+    baseline = float(initial_cash) if initial_cash is not None else (
+        equity_values[0] if equity_values else 0.0
+    )
+    yearly_rows = yearly_return_rows(equity_rows, initial_cash=baseline)
+    yearly_annualized = [
+        float(row["annualized_return"])
+        for row in yearly_rows
+        if row["annualized_return"] is not None
+        and math.isfinite(float(row["annualized_return"]))
+    ]
+    overall_total_return = (
+        equity_values[-1] / baseline - 1.0
+        if equity_values and baseline > 0
+        else None
+    )
+
     return {
         "max_drawdown": max_drawdown,
         "annualized_return_mean": annualized_return_mean,
+        "overall_annualized_return": (
+            annualized_return(
+                overall_total_return,
+                sum(int(row["trading_days"]) for row in yearly_rows),
+            )
+            if overall_total_return is not None
+            else None
+        ),
+        "average_yearly_annualized_return": (
+            sum(yearly_annualized) / len(yearly_annualized)
+            if yearly_annualized
+            else None
+        ),
+        "year_count": len(yearly_rows),
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe_ratio,
     }
@@ -414,7 +446,11 @@ def run_portfolio_from_prepared(
         trades=trades,
         start_date=None,
     )
-    risk_metrics = calculate_risk_metrics(equity_rows=equity_rows, trades=trades)
+    risk_metrics = calculate_risk_metrics(
+        equity_rows=equity_rows,
+        trades=trades,
+        initial_cash=settings.initial_cash,
+    )
     summary = {
         "run_date": dt.date.today().isoformat(),
         "initial_cash": settings.initial_cash,
@@ -487,6 +523,9 @@ def run_realistic_portfolio_from_prepared(
             "transfer_fee_rate": settings.fee_model.transfer_fee_rate,
             "max_drawdown": 0.0,
             "annualized_return_mean": None,
+            "overall_annualized_return": None,
+            "average_yearly_annualized_return": None,
+            "year_count": 0,
             "annualized_volatility": None,
             "sharpe_ratio": None,
         }
@@ -769,7 +808,11 @@ def run_realistic_portfolio_from_prepared(
 
     final_equity = equity_rows[-1]["total_value"] if equity_rows else settings.initial_cash
     total_return = final_equity / settings.initial_cash - 1.0 if settings.initial_cash else float("nan")
-    risk_metrics = calculate_risk_metrics(equity_rows=equity_rows, trades=trades)
+    risk_metrics = calculate_risk_metrics(
+        equity_rows=equity_rows,
+        trades=trades,
+        initial_cash=settings.initial_cash,
+    )
     summary = {
         "run_date": dt.date.today().isoformat(),
         "initial_cash": settings.initial_cash,
@@ -1078,7 +1121,11 @@ def run_staggered_cohort_portfolio_from_prepared(
         )
 
     final_equity = equity_rows[-1]["total_value"]
-    risk_metrics = calculate_risk_metrics(equity_rows=equity_rows, trades=trades)
+    risk_metrics = calculate_risk_metrics(
+        equity_rows=equity_rows,
+        trades=trades,
+        initial_cash=settings.initial_cash,
+    )
     positions = [
         {
             "cohort_id": sleeve.cohort_id,
@@ -1239,6 +1286,9 @@ def _empty_cohort_result(
         "transfer_fee_rate": settings.fee_model.transfer_fee_rate,
         "max_drawdown": 0.0,
         "annualized_return_mean": None,
+        "overall_annualized_return": None,
+        "average_yearly_annualized_return": None,
+        "year_count": 0,
         "annualized_volatility": None,
         "sharpe_ratio": None,
     }
@@ -1298,6 +1348,25 @@ def _write_equity_curve_csv(path: Path, rows: List[dict]) -> None:
             formatted = {key: row.get(key, "") for key in fieldnames}
             formatted["total_return"] = format_percent(formatted["total_return"])
             writer.writerow(formatted)
+
+
+def _write_yearly_returns_csv(path: Path, rows: List[dict]) -> None:
+    fieldnames = [
+        "year",
+        "period_start_date",
+        "period_end_date",
+        "trading_days",
+        "start_equity",
+        "end_equity",
+        "total_return",
+        "annualized_return",
+        "is_partial_year",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 def _write_orders_csv(path: Path, orders: List[dict]) -> None:
@@ -1386,10 +1455,16 @@ def write_portfolio_backtest_outputs(
     summary_path = resolved_output_dir / "portfolio_summary.json"
     equity_curve_path = resolved_output_dir / "equity_curve.csv"
     equity_curve_html_path = resolved_output_dir / "equity_curve.html"
+    yearly_returns_path = resolved_output_dir / "yearly_returns.csv"
+    yearly_rows = yearly_return_rows(
+        result.equity_curve,
+        initial_cash=result.initial_cash,
+    )
     _write_trades_csv(trades_path, result.trades)
     _write_orders_csv(orders_path, result.orders)
     _write_positions_csv(positions_path, result.positions)
     _write_equity_curve_csv(equity_curve_path, result.equity_curve)
+    _write_yearly_returns_csv(yearly_returns_path, yearly_rows)
     _write_equity_curve_html(equity_curve_html_path, result.equity_curve, result.summary)
     with summary_path.open("w", encoding="utf-8") as f:
         json.dump(result.summary.to_dict(), f, ensure_ascii=False, indent=2)
@@ -1410,6 +1485,7 @@ def write_portfolio_backtest_outputs(
             "summary_path": summary_path,
             "equity_curve_path": equity_curve_path,
             "equity_curve_html_path": equity_curve_html_path,
+            "yearly_returns_path": yearly_returns_path,
         }
     )
 

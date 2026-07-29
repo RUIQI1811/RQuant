@@ -112,15 +112,25 @@ def calculate_gtja_factor_correlations(
     *,
     config: FactorCorrelationConfig | None = None,
     factor_statuses: Mapping[str, str] | None = None,
+    factor_directions: Mapping[str, int] | None = None,
     priority_scores: Mapping[str, float] | None = None,
 ) -> FactorCorrelationResult:
     """Calculate point-in-time cross-sectional correlations for GTJA191."""
 
     selected = tuple(dict.fromkeys(normalize_gtja_name(name) for name in factors))
+    directions = factor_directions or {}
+    invalid_directions = set(directions.values()).difference((-1, 1))
+    if invalid_directions:
+        raise ValueError("GTJA191 factor directions must be -1 or 1")
+    calculator = GTJA191(panels)
+
+    def calculate_directed(name: str) -> pd.DataFrame:
+        return calculator.calculate(name) * int(directions.get(name, 1))
+
     return _calculate_panel_factor_correlations(
         panels.close,
         selected,
-        calculate=GTJA191(panels).calculate,
+        calculate=calculate_directed,
         config=config,
         factor_statuses=factor_statuses,
         priority_scores=priority_scores,

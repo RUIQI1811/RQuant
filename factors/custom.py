@@ -106,13 +106,19 @@ class CustomFactors:
         """Negative rank of 5-day covariance between return and turnover ranks.
 
         ``turnover_value`` means traded amount.  The raw-data adapter uses the
-        repository's existing point-in-time fallback: explicit turnover value,
-        then ``amount * 1000``, then ``close * volume``.
+        explicit point-in-time field or Tushare ``amount * 1000``; price times
+        share volume is not substituted for a missing traded amount.
         来自于 alpha13
         """
 
         if self.d.turnover_value is None:
             raise CustomFactorDataError("custom_001 requires turnover_value")
+        missing = self.d.close.notna() & self.d.turnover_value.isna()
+        if missing.any().any():
+            raise CustomFactorDataError(
+                "custom_001 requires complete turnover_value; "
+                f"missing {int(missing.to_numpy().sum())} observed market rows"
+            )
         daily_return = self.d.close / delay(self.d.close, 1) - 1.0
         return -rank(
             covariance(
@@ -125,6 +131,12 @@ class CustomFactors:
     def custom_002(self) -> Panel:
         """Cross-sectional rank of the close discount relative to VWAP."""
 
+        missing = self.d.close.notna() & self.d.vwap.isna()
+        if missing.any().any():
+            raise CustomFactorDataError(
+                "custom_002 requires complete non-proxy VWAP; "
+                f"missing {int(missing.to_numpy().sum())} observed market rows"
+            )
         return rank(safe_div(self.d.vwap - self.d.close, self.d.vwap))
 
 

@@ -9,10 +9,11 @@ from factors import operators
 
 
 class SharedFactorOperatorsTest(unittest.TestCase):
-    def test_window_rounding_is_nearest_positive_integer(self):
+    def test_window_uses_source_formula_floor_semantics(self):
         self.assertEqual(operators.window(0), 1)
         self.assertEqual(operators.window(2.49), 2)
-        self.assertEqual(operators.window(2.5), 3)
+        self.assertEqual(operators.window(2.5), 2)
+        self.assertEqual(operators.window(3.92795), 3)
 
     def test_rank_is_daily_cross_sectional_percentile(self):
         frame = pd.DataFrame([[3.0, 1.0, 2.0]], columns=list("abc"))

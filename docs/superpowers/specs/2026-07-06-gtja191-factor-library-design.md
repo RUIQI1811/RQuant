@@ -202,6 +202,13 @@ the following policy:
 5. If two materially different formulas remain plausible, raise an explicit
    formula error for that factor and keep batch execution auditable.
 
+The source expressions for `gtja_159` and `gtja_181` remain unresolved under
+this policy.  The former subtracts a multi-day sum of prices from one current
+close; the latter mixes a stock-return deviation with squared benchmark-index
+level deviations.  Both remain lifecycle `watch` entries for provenance, but
+their calculators raise `GTJA191FormulaError` and batch execution records
+`formula_error` until a new canonical source uniquely resolves them.
+
 ## Tests
 
 Create `tests/test_gtja191.py` with four layers:

@@ -230,6 +230,12 @@ manifest 同时记录实际线程数和节流值，便于复现运行条件。
 date, open, close, high, low, volume
 ```
 
+Tushare 抓取结果还会保存 `amount` 和 `adj_factor`。`amount` 用于构造论文定义的
+日成交额及 `advN`；`adj_factor` 用于把 `amount / volume` 得到的未复权 VWAP 映射到
+OHLC 所在的 qfq 价格基准。旧行情文件若没有 `adj_factor`，重新执行同一区间的
+`fetch-data` 后才可运行依赖 VWAP 的 Alpha101/GTJA/custom 因子；已经显式保存同基准
+`vwap` / `avg` 的文件不受此限制。
+
 历史市值分档使用独立的 Tushare `daily_basic` 时点上下文，不把今天的市值回填到历史：
 
 ```bash
@@ -447,9 +453,8 @@ python -m rquant factor-run-all --config config/factor_research_run_all.yaml --f
 
 流水线固定执行：
 
-1. 用 `evaluation.profile` 控制批量报告档位；默认 `core` 生成 IC/Rank IC、分布、
-   分组收益、中性化、市值/行业 IC、高值侧可交易多头、暴露和统计多空报告。
-   `full` 额外生成市场状态 IC、统计 TopN、低值侧、可交易多空和股票池逐日明细。
+1. 对配置中的全部周期生成 IC/Rank IC、方向、高低值两侧只做多毛收益与净收益、
+   扣费前后夏普、逐年收益、市值分档 IC、行业/板块 IC 和牛熊震荡 IC。
 2. 用批量排行榜中的同周期成本前夏普作为质量优先级，计算每日横截面
    Spearman/Pearson，两两 `|Spearman| >= 0.8` 聚类去重。
 3. `fit-multifactor` 直接读取 `deduplicated_factors.csv`，全部去重代表进入
@@ -457,9 +462,9 @@ python -m rquant factor-run-all --config config/factor_research_run_all.yaml --f
 4. 严格使用过去三个完整日历年训练、预测下一个完整日历年；每个模型分别运行
    零成本和实际成本的 A 股约束组合回测。
 
-`core` 的高值侧报告表示买入因子值较高的股票；不会卖空。未声明方向且 Rank IC
-为负的因子会标记为 `needs_full_direction_check`，不会在同一批样本中自动翻向。
-统计型多空文件仍仅作诊断，不会进入 ML 或组合执行。
+这里“高值侧”和“低值侧”都表示买入该侧股票；不会卖空任何股票。因子阶段仍输出
+成本前/成本后报告供研究，但成本不参与 ML 特征准入。交易费用只在最终模型组合回测中
+用于判断模型能否盈利。统计型多空文件仍仅作诊断，不会进入 ML 或组合执行。
 
 每个子命令都有自己的 `data/runs/<run-id>/run.json` 和 `run.log`。RunAll 自身只在
 `data/runs/` 保留轻量父运行记录，记录子命令、退出码和路径；不再生成
@@ -535,6 +540,11 @@ filter_status.csv
 都可通过 `--market-regime-lookback-days`、`--bull-return-threshold`、
 `--bear-return-threshold` 和 `--market-cap-groups` 调整。
 
+行业中性公式及 `industry_ic*` 只接受逐日点时分类。应通过 `--context-file` 提供
+`date,symbol,industry`，需要对应层级的公式还必须分别提供 `sector` 或
+`subindustry`。`stocklist.csv` 中的当前静态行业不会再复制到全部历史日期，也不会
+用单一 `industry` 冒充 sector/subindustry；缺少输入时相关因子会明确失败。
+
 `tradable_top_*` 表示买入因子值最高的一侧，`tradable_bottom_*` 表示买入因子值最低的
 一侧；两者都只做多。各文件同时保留 `gross_*`（不扣成本）和 `net_*`（扣成本）指标。
 `horizon_effectiveness.csv` 按 1/5/10/20 日等周期列出 Rank IC 方向、高低两侧毛/净
@@ -550,8 +560,8 @@ filter_status.csv
 -rank(covariance(rank(close / delay(close, 1) - 1), rank(turnover_value), 5))
 ```
 
-这里的 `turnover_value` 是成交额：优先使用同名原始字段，其次使用
-`amount * 1000`，最后回退为 `close * volume`。运行：
+这里的 `turnover_value` 是成交额：优先使用同名原始字段，其次使用 Tushare 的
+`amount * 1000`；缺少成交额时明确报错，不再用成交量或 `close * volume` 冒充。运行：
 
 ```bash
 python -m rquant factor-test --factor custom_001 --data data/raw --metadata config/stocklist.csv --windows 1 5 10 20 --groups 10 --output factor_report
@@ -578,21 +588,13 @@ rank((vwap - close) / vwap)
 python -m rquant factor-test --factor custom_002 --data data/raw --metadata config/stocklist.csv --windows 1 5 10 20 --groups 10 --output factor_report
 ```
 
-若原始数据没有 `vwap` 或 `avg`，面板构建器使用
-`(high + low + close) / 3` 作为 VWAP 回退值。
+原始数据可以直接提供与 OHLC 同价格基准的 `vwap` / `avg`。Tushare qfq 数据则使用
+`amount`、`volume` 和 `adj_factor` 构造真实 VWAP；不会再用
+`(high + low + close) / 3` 冒充。输入不足或计算值不在当日 `[low, high]` 范围时，
+依赖 VWAP 的因子明确报错（边界只保留微小的行情舍入容差）；部分交易日缺失也不会
+静默产出残缺结果。
 
 ### Alpha101 批处理
-
-`factor-batch` 默认使用精简的 `core` 档位。它保留分布、分组收益、中性化 IC、
-市值 IC、行业 IC、暴露、统计多空以及高值侧可交易 TopN/Top Quantile；跳过市场状态
-IC、统计 TopN、低值侧可交易回测、可交易多空和逐日股票池明细。需要完整诊断时显式运行：
-
-```bash
-python -m rquant factor-batch --family alpha101 --profile full --data data/raw --factors all --output factor_report/alpha101_batch/full
-```
-
-profile 会写入批次 manifest、单因子运行元数据和恢复指纹，`core` 与 `full` 不会错误
-复用彼此的结果。`factor-test` 仍保持完整单因子诊断，不受批处理默认档位影响。
 
 查看因子生命周期状态：
 
@@ -621,11 +623,14 @@ factor_report/alpha101_batch/
 config/factors.yaml
 ```
 
-Alpha101 的默认库是“经济解释优先”的研究池：只把具备明确价格位置、趋势/反转、
-波动或价量/流动性假设的公式列为 `watch`；其余不透明的遗传规划表达式（任意小数
-窗口/权重、原始价格阈值或高次幂）默认为 `disabled`。`watch` 仍须通过样本外的
-长多 TopN / Top Quantile 检验后才可升级为 `active`。如需复现被禁用的原始 WorldQuant
-公式，可在一次性实验中追加 `--ignore-factor-config`，不要将其作为默认特征池。
+Alpha101 的 `default_status` 是 `watch`：配置中未单独列出的公式也会进入普通研究批次，
+但这不表示已可用于生产。只有显式标记为 `disabled` 的公式才从普通批次和 ML 选择中
+排除；`watch` 仍须通过样本外的长多 TopN / Top Quantile 检验后才可升级为 `active`。
+如需一次性复现被禁用公式，可追加 `--ignore-factor-config`。
+
+Alpha101 小数回看期严格按原论文向下取整，例如 `3.92795 -> 3`。论文中的布尔比较
+保留为 `0/1`，乘 `-1` 后为 `0/-1`；只有显式三元表达式才使用 `-1/+1`。所有滚动
+条件分支在完整预热窗口形成前保持缺失，不会把 NaN 条件误当成 else 分支信号。
 
 ### GTJA191 批处理
 
@@ -648,9 +653,24 @@ factor_report/gtja191_batch/
 config/gtja191_factors.yaml
 ```
 
-GTJA191 与 Alpha101 一样按经济解释管理：默认只运行 `watch` 的简单价格位置、
-趋势/反转、波动与价量/流动性假设；任意拟合权重、原始价格阈值/高次幂和不透明嵌套
-表达式默认 `disabled`。当前不设置 `active`，历史表现不能替代样本外长多验证。
+GTJA191 与 Alpha101 一样把 `default_status` 设为 `watch`：未单独列出的公式也进入普通
+研究批次，只有显式标记为 `disabled` 的公式才被排除。当前不设置 `active`，历史表现
+不能替代样本外长多验证。
+
+GTJA 的运行状态与生命周期状态分开：`watch` 只表示保留研究，不保证当前输入足够或
+原始公式已能唯一解释。`gtja_070/095/132/144` 必须有真实成交额，不会使用
+`close * volume` 伪造；36 个 VWAP 依赖因子必须在每个已观测行情行都有同价格
+基准的 VWAP。基准指数输入必须覆盖全部已观测交易日；MKT/SMB/HML 收益序列
+可以有计算收益所必需的连续前导预热缺失，但从首个有效日起不得有内部断档。任一
+非预期必需值缺失都记为 `missing_input`，不用横截面或价量代理补齐。
+
+`gtja_149` 先用基准指数下跌条件筛选观测，再对最近 252 个满足条件的观测做
+回归，不是要求 252 个连续下跌交易日。条件分支和 `COUNT`/`SUMIF` 在滞后、滚动或
+外部输入未就绪时保留 NaN，不把未知条件当成 false/0。
+
+原始研报中 `gtja_159` 的单个 `CLOSE` 减多日价格总和、`gtja_181` 的股票收益率偏差与
+指数点位偏差平方相减都无法唯一、量纲一致地修复。这两个因子保留 `watch` 以便
+追踪，但计算时明确记为 `formula_error`，不再静默产出数值。
 
 同一配置中的 `default_direction` / `directions` 控制研究值方向，取值只能是 `1` 或
 `-1`。当前 `-1` 清单来自可比全样本中 10 日、20 日 `rank_ic_mean` 平均值为负的

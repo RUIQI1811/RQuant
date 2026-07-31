@@ -94,6 +94,30 @@ class FetchKlineRangeOverwriteTest(unittest.TestCase):
         self.assertTrue(result.empty)
         limiter.wait.assert_called_once_with()
         api.assert_called_once()
+        self.assertTrue(api.call_args.kwargs["adjfactor"])
+
+    def test_get_kline_persists_adjustment_factor_for_qfq_vwap(self):
+        provider = pd.DataFrame(
+            {
+                "trade_date": ["20260102"],
+                "open": [10.0],
+                "close": [10.1],
+                "high": [10.2],
+                "low": [9.9],
+                "vol": [1000.0],
+                "amount": [1005.0],
+                "adj_factor": [2.5],
+            }
+        )
+        with patch.object(fetch_kline.ts, "pro_bar", return_value=provider) as api:
+            result = fetch_kline._get_kline_tushare(
+                "000001",
+                "20260102",
+                "20260102",
+            )
+
+        self.assertEqual(result["adj_factor"].tolist(), [2.5])
+        self.assertTrue(api.call_args.kwargs["adjfactor"])
 
     def test_get_kline_suppresses_known_tushare_fillna_future_warning(self):
         def provider_warning(**_kwargs):

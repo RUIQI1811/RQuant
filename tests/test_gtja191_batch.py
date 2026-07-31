@@ -66,7 +66,7 @@ class GTJA191BatchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             result = GTJA191BatchRunner(
                 panels,
-                factors=("gtja_001", "gtja_030", "gtja_191"),
+                factors=("gtja_001", "gtja_030", "gtja_159", "gtja_191"),
                 output_dir=Path(temp_dir),
                 config=GTJA191BatchConfig(
                     windows=(1,),
@@ -77,10 +77,11 @@ class GTJA191BatchTest(unittest.TestCase):
             ).run()
             self.assertEqual(
                 result.status["factor"].tolist(),
-                ["gtja_001", "gtja_030", "gtja_191"],
+                ["gtja_001", "gtja_030", "gtja_159", "gtja_191"],
             )
             statuses = result.status.set_index("factor")["status"]
             self.assertEqual(statuses.loc["gtja_030"], "missing_input")
+            self.assertEqual(statuses.loc["gtja_159"], "formula_error")
             self.assertTrue((Path(temp_dir) / "batch_status.csv").exists())
             self.assertTrue((Path(temp_dir) / "leaderboard.csv").exists())
             self.assertTrue((Path(temp_dir) / "long_only_profitability.csv").exists())

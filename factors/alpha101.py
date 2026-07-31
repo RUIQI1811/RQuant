@@ -5,8 +5,9 @@ panel is represented by a DataFrame whose rows are trading dates and columns
 are symbols.  Cross-sectional operators therefore work across columns and
 time-series operators work down rows.
 
-The original formulas contain fractional lookback constants.  They are rounded
-to the nearest positive trading-day integer before being passed to pandas.
+The original formulas contain fractional lookback constants.  Per the source
+paper, they are floored to a positive trading-day integer before being passed
+to pandas.
 """
 
 from __future__ import annotations
@@ -65,6 +66,18 @@ def _signed_condition(
     return out if valid is None else out.where(valid)
 
 
+def _boolean_condition(
+    condition: Panel,
+    *,
+    multiplier: float = 1.0,
+    valid: Panel | None = None,
+) -> Panel:
+    """Return the source formula's numeric boolean value (0/1), optionally signed."""
+
+    out = condition.astype(float) * float(multiplier)
+    return out if valid is None else out.where(valid)
+
+
 def indneutralize(value: Panel, groups: Panel | None, group_name: str) -> Panel:
     """Demean each date cross-section within an industry classification."""
     if groups is None or groups.isna().all().all():
@@ -97,7 +110,20 @@ class Alpha101Panels:
     market_regime: Panel | None = None
 
     def adv(self, periods: float | int) -> Panel:
-        return ts_sum(self.volume, periods) / _window(periods)
+        """Average daily traded value over the source formula's lookback."""
+
+        if self.turnover_value is None:
+            raise Alpha101DataError(
+                "Alpha101 advN requires point-in-time traded value "
+                "('turnover_value' or Tushare 'amount')"
+            )
+        missing = self.close.notna() & self.turnover_value.isna()
+        if missing.any().any():
+            raise Alpha101DataError(
+                "Alpha101 advN requires complete point-in-time traded value; "
+                f"missing {int(missing.to_numpy().sum())} observed market rows"
+            )
+        return ts_sum(self.turnover_value, periods) / _window(periods)
 
 
 class Alpha101:
@@ -115,6 +141,8 @@ class Alpha101:
         method = getattr(self, normalized, None)
         if method is None:
             raise KeyError(f"unknown Alpha101 factor: {name}")
+        if normalized in VWAP_ALPHA_NAMES:
+            self._vwap()
         return _replace_inf(method())
 
     def calculate_many(
@@ -137,6 +165,16 @@ class Alpha101:
 
     def _neutral(self, value: Panel, level: str) -> Panel:
         return indneutralize(value, getattr(self.d, level), level)
+
+    def _vwap(self) -> Panel:
+        missing = self.d.close.notna() & self.d.vwap.isna()
+        if missing.any().any():
+            raise Alpha101DataError(
+                "VWAP-dependent alpha requires explicit vwap/avg or Tushare "
+                "amount, volume, and adj_factor on the same price basis; "
+                f"missing {int(missing.to_numpy().sum())} observed market rows"
+            )
+        return self.d.vwap
 
     def alpha_001(self) -> Panel:
         x = self.d.close.copy()
@@ -170,12 +208,17 @@ class Alpha101:
 
     def alpha_009(self) -> Panel:
         change = delta(self.d.close, 1)
-        return change.where(ts_min(change, 5) > 0, change.where(ts_max(change, 5) < 0, -change))
+        minimum = ts_min(change, 5)
+        maximum = ts_max(change, 5)
+        value = change.where(minimum > 0, change.where(maximum < 0, -change))
+        return value.where(change.notna() & minimum.notna() & maximum.notna())
 
     def alpha_010(self) -> Panel:
         change = delta(self.d.close, 1)
-        value = change.where(ts_min(change, 4) > 0, change.where(ts_max(change, 4) < 0, -change))
-        return rank(value)
+        minimum = ts_min(change, 4)
+        maximum = ts_max(change, 4)
+        value = change.where(minimum > 0, change.where(maximum < 0, -change))
+        return rank(value.where(change.notna() & minimum.notna() & maximum.notna()))
 
     def alpha_011(self) -> Panel:
         spread = self.d.vwap - self.d.close
@@ -223,11 +266,15 @@ class Alpha101:
         return -delta(correlation(self.d.high, self.d.volume, 5), 5) * rank(stddev(self.d.close, 20))
 
     def alpha_023(self) -> Panel:
-        return -delta(self.d.high, 2).where(ts_sum(self.d.high, 20) / 20 < self.d.high, 0.0)
+        mean_high = ts_sum(self.d.high, 20) / 20
+        change = delta(self.d.high, 2)
+        value = -change.where(mean_high < self.d.high, 0.0)
+        return value.where(mean_high.notna() & change.notna())
 
     def alpha_024(self) -> Panel:
         slope = _safe_div(delta(ts_sum(self.d.close, 100) / 100, 100), delay(self.d.close, 100))
-        return (-(self.d.close - ts_min(self.d.close, 100))).where(slope <= 0.05, -delta(self.d.close, 3))
+        value = (-(self.d.close - ts_min(self.d.close, 100))).where(slope <= 0.05, -delta(self.d.close, 3))
+        return value.where(slope.notna())
 
     def alpha_025(self) -> Panel:
         return rank(-self.d.returns * self.d.adv(20) * self.d.vwap * (self.d.high - self.d.close))
@@ -322,14 +369,14 @@ class Alpha101:
 
     def alpha_049(self) -> Panel:
         slope = (delay(self.d.close, 20) - delay(self.d.close, 10)) / 10 - (delay(self.d.close, 10) - self.d.close) / 10
-        return (-(self.d.close - delay(self.d.close, 1))).where(slope >= -0.1, 1.0)
+        return (-(self.d.close - delay(self.d.close, 1))).where(slope >= -0.1, 1.0).where(slope.notna())
 
     def alpha_050(self) -> Panel:
         return -ts_max(rank(correlation(rank(self.d.volume), rank(self.d.vwap), 5)), 5)
 
     def alpha_051(self) -> Panel:
         slope = (delay(self.d.close, 20) - delay(self.d.close, 10)) / 10 - (delay(self.d.close, 10) - self.d.close) / 10
-        return (-(self.d.close - delay(self.d.close, 1))).where(slope >= -0.05, 1.0)
+        return (-(self.d.close - delay(self.d.close, 1))).where(slope >= -0.05, 1.0).where(slope.notna())
 
     def alpha_052(self) -> Panel:
         return (-ts_min(self.d.low, 5) + delay(ts_min(self.d.low, 5), 5)) * rank((ts_sum(self.d.returns, 240) - ts_sum(self.d.returns, 20)) / 220) * ts_rank(self.d.volume, 5)
@@ -373,13 +420,22 @@ class Alpha101:
     def alpha_061(self) -> Panel:
         left = rank(self.d.vwap - ts_min(self.d.vwap, 16.1219))
         right = rank(correlation(self.d.vwap, self.d.adv(180), 17.9282))
-        return _signed_condition(left < right, valid=left.notna() & right.notna())
+        return _boolean_condition(left < right, valid=left.notna() & right.notna())
 
     def alpha_062(self) -> Panel:
         left = rank(correlation(self.d.vwap, ts_sum(self.d.adv(20), 22.4101), 9.91009))
-        comparison = (2 * rank(self.d.open)) < (rank((self.d.high + self.d.low) / 2) + rank(self.d.high))
+        ranked_open = rank(self.d.open)
+        ranked_midpoint = rank((self.d.high + self.d.low) / 2)
+        ranked_high = rank(self.d.high)
+        comparison = ((2 * ranked_open) < (ranked_midpoint + ranked_high)).where(
+            ranked_open.notna() & ranked_midpoint.notna() & ranked_high.notna()
+        )
         right = rank(comparison.astype(float))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_063(self) -> Panel:
         first = rank(decay_linear(delta(self._neutral(self.d.close, "industry"), 2.25164), 8.22237))
@@ -392,13 +448,21 @@ class Alpha101:
         left = rank(correlation(ts_sum(mixed, 12.7054), ts_sum(self.d.adv(120), 12.7054), 16.6208))
         right_value = ((self.d.high + self.d.low) / 2) * 0.178404 + self.d.vwap * (1 - 0.178404)
         right = rank(delta(right_value, 3.69741))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_065(self) -> Panel:
         mixed = self.d.open * 0.00817205 + self.d.vwap * (1 - 0.00817205)
         left = rank(correlation(mixed, ts_sum(self.d.adv(60), 8.6911), 6.40374))
         right = rank(self.d.open - ts_min(self.d.open, 13.635))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_066(self) -> Panel:
         first = rank(decay_linear(delta(self.d.vwap, 3.51013), 7.23052))
@@ -417,7 +481,11 @@ class Alpha101:
         left = ts_rank(correlation(rank(self.d.high), rank(self.d.adv(15)), 8.91644), 13.9333)
         mixed = self.d.close * 0.518371 + self.d.low * (1 - 0.518371)
         right = rank(delta(mixed, 1.06157))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_069(self) -> Panel:
         base = rank(ts_max(delta(self._neutral(self.d.vwap, "industry"), 2.72412), 4.79344))
@@ -465,12 +533,16 @@ class Alpha101:
         left = rank(correlation(self.d.close, ts_sum(self.d.adv(30), 37.4843), 15.1365))
         mixed = self.d.high * 0.0261661 + self.d.vwap * (1 - 0.0261661)
         right = rank(correlation(rank(mixed), rank(self.d.volume), 11.4791))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_075(self) -> Panel:
         left = rank(correlation(self.d.vwap, self.d.volume, 4.24304))
         right = rank(correlation(rank(self.d.low), rank(self.d.adv(50)), 12.4413))
-        return _signed_condition(left < right, valid=left.notna() & right.notna())
+        return _boolean_condition(left < right, valid=left.notna() & right.notna())
 
     def alpha_076(self) -> Panel:
         first = rank(decay_linear(delta(self.d.vwap, 1.24383), 11.8259))
@@ -496,7 +568,7 @@ class Alpha101:
         mixed = self.d.close * 0.60733 + self.d.open * (1 - 0.60733)
         left = rank(delta(self._neutral(mixed, "sector"), 1.23438))
         right = rank(correlation(ts_rank(self.d.vwap, 3.60973), ts_rank(self.d.adv(150), 9.18637), 14.6644))
-        return _signed_condition(left < right, valid=left.notna() & right.notna())
+        return _boolean_condition(left < right, valid=left.notna() & right.notna())
 
     def alpha_080(self) -> Panel:
         mixed = self.d.open * 0.868128 + self.d.high * (1 - 0.868128)
@@ -508,7 +580,11 @@ class Alpha101:
         corr = correlation(self.d.vwap, ts_sum(self.d.adv(10), 49.6054), 8.47743)
         left = rank(np.log(product(rank(np.power(rank(corr), 4)), 14.9655)))
         right = rank(correlation(rank(self.d.vwap), rank(self.d.volume), 5.07914))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_082(self) -> Panel:
         first = rank(decay_linear(delta(self.d.open, 1.46063), 14.8717))
@@ -539,7 +615,11 @@ class Alpha101:
         left = ts_rank(correlation(self.d.close, ts_sum(self.d.adv(20), 14.7444), 6.00049), 20.4195)
         # Open cancels from the published expression.
         right = rank(self.d.close - self.d.vwap)
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_087(self) -> Panel:
         mixed = self.d.close * 0.369701 + self.d.vwap * (1 - 0.369701)
@@ -573,7 +653,15 @@ class Alpha101:
         return -(first - second)
 
     def alpha_092(self) -> Panel:
-        condition = ((self.d.high + self.d.low) / 2 + self.d.close) < (self.d.low + self.d.open)
+        condition = (
+            ((self.d.high + self.d.low) / 2 + self.d.close)
+            < (self.d.low + self.d.open)
+        ).where(
+            self.d.high.notna()
+            & self.d.low.notna()
+            & self.d.close.notna()
+            & self.d.open.notna()
+        )
         first = ts_rank(decay_linear(condition.astype(float), 14.7221), 18.8683)
         second = ts_rank(decay_linear(correlation(rank(self.d.low), rank(self.d.adv(30)), 7.58555), 6.94024), 6.80584)
         return element_min(first, second)
@@ -593,7 +681,7 @@ class Alpha101:
         left = rank(self.d.open - ts_min(self.d.open, 12.4105))
         corr = correlation(ts_sum((self.d.high + self.d.low) / 2, 19.1351), ts_sum(self.d.adv(40), 19.1351), 12.8742)
         right = ts_rank(np.power(rank(corr), 5), 11.7584)
-        return _signed_condition(left < right, valid=left.notna() & right.notna())
+        return _boolean_condition(left < right, valid=left.notna() & right.notna())
 
     def alpha_096(self) -> Panel:
         first = ts_rank(decay_linear(correlation(rank(self.d.vwap), rank(self.d.volume), 3.83878), 4.16783), 8.38151)
@@ -617,7 +705,11 @@ class Alpha101:
     def alpha_099(self) -> Panel:
         left = rank(correlation(ts_sum((self.d.high + self.d.low) / 2, 19.8975), ts_sum(self.d.adv(60), 19.8975), 8.8136))
         right = rank(correlation(self.d.low, self.d.volume, 6.28259))
-        return _signed_condition(left < right, true_value=-1.0, false_value=1.0, valid=left.notna() & right.notna())
+        return _boolean_condition(
+            left < right,
+            multiplier=-1.0,
+            valid=left.notna() & right.notna(),
+        )
 
     def alpha_100(self) -> Panel:
         position = _safe_div((self.d.close - self.d.low) - (self.d.high - self.d.close), self.d.high - self.d.low) * self.d.volume
@@ -631,6 +723,53 @@ class Alpha101:
 
 
 ALPHA101_NAMES = tuple(f"alpha_{number:03d}" for number in range(1, 102))
+VWAP_ALPHA_NAMES = frozenset(
+    {
+        "alpha_005",
+        "alpha_011",
+        "alpha_025",
+        "alpha_027",
+        "alpha_032",
+        "alpha_036",
+        "alpha_041",
+        "alpha_042",
+        "alpha_047",
+        "alpha_050",
+        "alpha_057",
+        "alpha_058",
+        "alpha_059",
+        "alpha_061",
+        "alpha_062",
+        "alpha_063",
+        "alpha_064",
+        "alpha_065",
+        "alpha_066",
+        "alpha_067",
+        "alpha_069",
+        "alpha_070",
+        "alpha_071",
+        "alpha_072",
+        "alpha_073",
+        "alpha_074",
+        "alpha_075",
+        "alpha_076",
+        "alpha_077",
+        "alpha_078",
+        "alpha_079",
+        "alpha_081",
+        "alpha_083",
+        "alpha_084",
+        "alpha_086",
+        "alpha_087",
+        "alpha_089",
+        "alpha_091",
+        "alpha_093",
+        "alpha_094",
+        "alpha_096",
+        "alpha_097",
+        "alpha_098",
+    }
+)
 
 
 def normalize_alpha_name(name: str | int) -> str:
@@ -676,31 +815,42 @@ def _wide_field(
     return pd.DataFrame(series).reindex(index=dates, columns=symbols).sort_index()
 
 
-def _classification_panel(
+def _point_in_time_classification_panel(
     metadata: pd.DataFrame | Mapping[str, Mapping[str, object]] | None,
     column: str,
     *,
     dates: pd.DatetimeIndex,
     symbols: Sequence[str],
 ) -> Panel | None:
-    if metadata is None:
+    if metadata is None or isinstance(metadata, Mapping):
         return None
-    if isinstance(metadata, Mapping):
-        values = {
-            str(symbol).zfill(6): fields.get(column)
-            for symbol, fields in metadata.items()
-            if isinstance(fields, Mapping)
-        }
-    else:
-        frame = metadata.copy()
-        frame.columns = [str(value).lower() for value in frame.columns]
-        symbol_col = next((value for value in ("symbol", "code", "ts_code") if value in frame.columns), None)
-        if symbol_col is None or column not in frame.columns:
-            return None
-        symbol_values = frame[symbol_col].astype(str).str.extract(r"(\d+)", expand=False).str.zfill(6)
-        values = dict(zip(symbol_values, frame[column]))
-    row = pd.Series(values, index=symbols, dtype="object")
-    return pd.DataFrame([row.to_numpy()] * len(dates), index=dates, columns=symbols)
+    frame = metadata.copy()
+    frame.columns = [str(value).lower() for value in frame.columns]
+    symbol_col = next(
+        (value for value in ("symbol", "code", "ts_code") if value in frame.columns),
+        None,
+    )
+    if symbol_col is None or "date" not in frame.columns or column not in frame.columns:
+        return None
+    work = frame[["date", symbol_col, column]].copy()
+    work["date"] = pd.to_datetime(work["date"], errors="coerce")
+    work["symbol"] = (
+        work[symbol_col]
+        .astype(str)
+        .str.extract(r"(\d+)", expand=False)
+        .str.zfill(6)
+    )
+    work = work.dropna(subset=["date", "symbol"])
+    if work.duplicated(["date", "symbol"]).any():
+        raise Alpha101DataError(
+            f"point-in-time metadata contains duplicate date/symbol rows for '{column}'"
+        )
+    return (
+        work.pivot(index="date", columns="symbol", values=column)
+        .reindex(index=dates, columns=symbols)
+        .sort_index()
+        .rename_axis(index=None, columns=None)
+    )
 
 
 def _wide_classification_field(
@@ -730,14 +880,52 @@ def _wide_classification_field(
 
 
 def _combine_classification_panels(
-    point_in_time: Panel | None,
-    static: Panel | None,
+    raw_point_in_time: Panel | None,
+    metadata_point_in_time: Panel | None,
 ) -> Panel | None:
-    if point_in_time is None:
-        return static
-    if static is None:
-        return point_in_time
-    return point_in_time.combine_first(static)
+    if raw_point_in_time is None:
+        return metadata_point_in_time
+    if metadata_point_in_time is None:
+        return raw_point_in_time
+    return raw_point_in_time.combine_first(metadata_point_in_time)
+
+
+def _validate_vwap_price_basis(
+    value: Panel,
+    *,
+    low: Panel,
+    high: Panel,
+) -> Panel:
+    """Keep only VWAP observations compatible with the supplied OHLC basis."""
+
+    # Tushare rounds OHLC and amount independently.  A one-cent (or 1 bp for
+    # high-priced names) allowance avoids rejecting a valid boundary VWAP while
+    # remaining far below the gap caused by an incompatible adjustment basis.
+    tolerance = high.abs().combine(low.abs(), np.maximum).mul(1e-4).clip(lower=0.01)
+    compatible = value.ge(low - tolerance) & value.le(high + tolerance)
+    return value.where(compatible)
+
+
+def _vwap_from_tushare_amount(
+    *,
+    amount: Panel | None,
+    volume: Panel,
+    adj_factor: Panel | None,
+    low: Panel,
+    high: Panel,
+) -> Panel | None:
+    """Build VWAP on the same qfq price basis as OHLC and reject incompatible rows."""
+
+    if amount is None:
+        return None
+    # Tushare daily amount is in thousand yuan and volume is in board lots.
+    unadjusted = _safe_div(amount * 1000.0, volume * 100.0)
+    if adj_factor is not None:
+        latest = adj_factor.apply(
+            lambda values: values.dropna().iloc[-1] if values.notna().any() else np.nan
+        )
+        unadjusted = unadjusted * adj_factor.div(latest, axis=1)
+    return _validate_vwap_price_basis(unadjusted, low=low, high=high)
 
 
 def build_alpha101_panels(
@@ -747,9 +935,13 @@ def build_alpha101_panels(
 ) -> Alpha101Panels:
     """Build aligned panels from the repository's per-symbol raw CSV frames.
 
-    VWAP uses an explicit ``vwap``/``avg`` column when available; otherwise it
-    falls back to typical price ``(high + low + close) / 3``.  ``advN`` is the
-    N-day mean of the input volume field, matching the formulas' volume units.
+    VWAP uses an explicit ``vwap``/``avg`` column when available.  For Tushare
+    qfq bars it is reconstructed from ``amount``, ``volume`` and ``adj_factor``;
+    typical price is never substituted.  ``advN`` uses daily traded value.
+
+    Static classifications in symbol metadata are intentionally not copied
+    across history.  Classification inputs must be dated metadata or exact-date
+    fields already merged into each raw frame.
     """
     if not raw_data:
         raise Alpha101DataError("raw_data is empty")
@@ -771,31 +963,72 @@ def build_alpha101_panels(
             raise Alpha101DataError(f"raw_data is missing required '{field}' values")
         required[field] = panel
 
-    explicit_vwap = _wide_field(raw_data, ("vwap", "avg"), dates=dates, symbols=symbols)
-    typical_price = (required["high"] + required["low"] + required["close"]) / 3.0
-    vwap = typical_price if explicit_vwap is None else explicit_vwap.combine_first(typical_price)
+    explicit_vwap = _wide_field(
+        raw_data,
+        ("vwap", "avg"),
+        dates=dates,
+        symbols=symbols,
+    )
+    if explicit_vwap is not None:
+        explicit_vwap = _validate_vwap_price_basis(
+            explicit_vwap,
+            low=required["low"],
+            high=required["high"],
+        )
+    amount = _wide_field(raw_data, ("amount",), dates=dates, symbols=symbols)
+    adj_factor = _wide_field(
+        raw_data,
+        ("adj_factor",),
+        dates=dates,
+        symbols=symbols,
+    )
+    calculated_vwap = _vwap_from_tushare_amount(
+        amount=amount,
+        volume=required["volume"],
+        adj_factor=adj_factor,
+        low=required["low"],
+        high=required["high"],
+    )
+    if explicit_vwap is None and calculated_vwap is None:
+        vwap = required["close"] * np.nan
+    elif explicit_vwap is None:
+        vwap = calculated_vwap
+    elif calculated_vwap is None:
+        vwap = explicit_vwap
+    else:
+        vwap = explicit_vwap.combine_first(calculated_vwap)
     cap = _wide_field(raw_data, ("cap", "market_cap", "total_mv"), dates=dates, symbols=symbols)
     is_st = _wide_field(raw_data, ("is_st",), dates=dates, symbols=symbols)
     turnover_value = _wide_field(raw_data, ("turnover_value",), dates=dates, symbols=symbols)
     if turnover_value is None:
-        amount = _wide_field(raw_data, ("amount",), dates=dates, symbols=symbols)
-        turnover_value = (
-            amount * 1000.0
-            if amount is not None
-            else required["close"] * required["volume"]
-        )
+        turnover_value = amount * 1000.0 if amount is not None else None
 
     sector = _combine_classification_panels(
         _wide_classification_field(raw_data, "sector", dates=dates, symbols=symbols),
-        _classification_panel(metadata, "sector", dates=dates, symbols=symbols),
+        _point_in_time_classification_panel(
+            metadata,
+            "sector",
+            dates=dates,
+            symbols=symbols,
+        ),
     )
     industry = _combine_classification_panels(
         _wide_classification_field(raw_data, "industry", dates=dates, symbols=symbols),
-        _classification_panel(metadata, "industry", dates=dates, symbols=symbols),
+        _point_in_time_classification_panel(
+            metadata,
+            "industry",
+            dates=dates,
+            symbols=symbols,
+        ),
     )
     subindustry = _combine_classification_panels(
         _wide_classification_field(raw_data, "subindustry", dates=dates, symbols=symbols),
-        _classification_panel(metadata, "subindustry", dates=dates, symbols=symbols),
+        _point_in_time_classification_panel(
+            metadata,
+            "subindustry",
+            dates=dates,
+            symbols=symbols,
+        ),
     )
     market_regime = _wide_classification_field(
         raw_data,
@@ -803,11 +1036,6 @@ def build_alpha101_panels(
         dates=dates,
         symbols=symbols,
     )
-    # A single industry column is still useful for every neutralization level in
-    # A-share datasets that do not carry a three-level classification hierarchy.
-    sector = sector if sector is not None else industry
-    subindustry = subindustry if subindustry is not None else industry
-
     return Alpha101Panels(
         open=required["open"],
         close=required["close"],

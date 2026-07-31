@@ -218,6 +218,7 @@ def _get_kline_tushare(
             df = ts.pro_bar(
                 ts_code=ts_code,
                 adj="qfq",
+                adjfactor=True,
                 start_date=start,
                 end_date=end,
                 freq="D",
@@ -233,10 +234,25 @@ def _get_kline_tushare(
 
     df = df.rename(columns={"trade_date": "date", "vol": "volume"}).copy()
     base_cols = ["date", "open", "close", "high", "low", "volume"]
-    optional_cols = [col for col in ("pre_close", "change", "pct_chg", "amount") if col in df.columns]
+    optional_cols = [
+        col
+        for col in ("pre_close", "change", "pct_chg", "amount", "adj_factor")
+        if col in df.columns
+    ]
     df = df[base_cols + optional_cols].copy()
     df["date"] = pd.to_datetime(df["date"])
-    for c in ["open", "close", "high", "low", "volume", "pre_close", "change", "pct_chg", "amount"]:
+    for c in [
+        "open",
+        "close",
+        "high",
+        "low",
+        "volume",
+        "pre_close",
+        "change",
+        "pct_chg",
+        "amount",
+        "adj_factor",
+    ]:
         if c not in df.columns:
             continue
         df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -255,7 +271,7 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
 
 
 _BASE_KLINE_COLUMNS = ["date", "open", "close", "high", "low", "volume"]
-_OPTIONAL_KLINE_COLUMNS = ["pre_close", "change", "pct_chg", "amount"]
+_OPTIONAL_KLINE_COLUMNS = ["pre_close", "change", "pct_chg", "amount", "adj_factor"]
 
 
 def _empty_kline_frame() -> pd.DataFrame:

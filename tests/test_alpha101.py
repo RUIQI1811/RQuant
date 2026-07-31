@@ -67,6 +67,7 @@ def _complete_panels(days: int = 320, symbols: int = 6) -> Alpha101Panels:
         sector=groups,
         industry=groups,
         subindustry=groups,
+        turnover_value=close * volume * 100.0,
     )
 
 
@@ -124,6 +125,64 @@ class Alpha101CalculatorTest(unittest.TestCase):
         with self.assertRaisesRegex(Alpha101DataError, "market-cap"):
             Alpha101(panels).calculate("alpha_056")
 
+    def test_adv_uses_traded_value_not_share_volume(self):
+        actual = self.panels.adv(20)
+        expected = self.panels.turnover_value.rolling(20, min_periods=20).sum() / 20
+        pd.testing.assert_frame_equal(actual, expected)
+        self.assertFalse(
+            actual.equals(self.panels.volume.rolling(20, min_periods=20).mean())
+        )
+
+    def test_missing_traded_value_is_explicit_for_adv_factor(self):
+        panels = Alpha101Panels(**{**self.panels.__dict__, "turnover_value": None})
+        with self.assertRaisesRegex(Alpha101DataError, "traded value"):
+            Alpha101(panels).calculate("alpha_007")
+
+        partial = self.panels.turnover_value.copy()
+        partial.iloc[0, 0] = np.nan
+        panels = Alpha101Panels(**{**self.panels.__dict__, "turnover_value": partial})
+        with self.assertRaisesRegex(Alpha101DataError, "missing 1 observed market rows"):
+            Alpha101(panels).calculate("alpha_007")
+
+    def test_boolean_formulas_keep_zero_one_source_values(self):
+        positive = self.calculator.calculate("alpha_061").stack().dropna()
+        negative = self.calculator.calculate("alpha_062").stack().dropna()
+        self.assertTrue(set(positive.unique()).issubset({0.0, 1.0}))
+        self.assertTrue(set(negative.unique()).issubset({-1.0, 0.0}))
+        self.assertNotIn(-1.0, positive.unique())
+        self.assertNotIn(1.0, negative.unique())
+
+    def test_conditional_factors_mask_incomplete_warmup_windows(self):
+        leading_missing = {
+            "alpha_009": 5,
+            "alpha_010": 4,
+            "alpha_023": 19,
+            "alpha_024": 199,
+            "alpha_049": 20,
+            "alpha_051": 20,
+        }
+        for factor, count in leading_missing.items():
+            with self.subTest(factor=factor):
+                values = self.calculator.calculate(factor).iloc[:, 0]
+                self.assertTrue(values.iloc[:count].isna().all())
+                self.assertTrue(values.iloc[count:].notna().any())
+
+    def test_vwap_factor_rejects_missing_true_vwap(self):
+        panels = Alpha101Panels(
+            **{
+                **self.panels.__dict__,
+                "vwap": self.panels.close * np.nan,
+            }
+        )
+        with self.assertRaisesRegex(Alpha101DataError, "VWAP-dependent"):
+            Alpha101(panels).calculate("alpha_011")
+
+        partial = self.panels.vwap.copy()
+        partial.iloc[0, 0] = np.nan
+        panels = Alpha101Panels(**{**self.panels.__dict__, "vwap": partial})
+        with self.assertRaisesRegex(Alpha101DataError, "missing 1 observed market rows"):
+            Alpha101(panels).calculate("alpha_011")
+
     def test_algebraic_simplifications_preserve_alpha101_outputs(self):
         calculator = self.calculator
         expected_059 = -ts_rank(
@@ -148,25 +207,155 @@ class Alpha101CalculatorTest(unittest.TestCase):
 
 
 class Alpha101EconomicLifecycleTest(unittest.TestCase):
-    def test_default_catalog_only_selects_economically_interpretable_watch_factors(self):
+    def test_default_catalog_keeps_unspecified_factors_on_watch(self):
         path = Path(__file__).resolve().parents[1] / "config" / "factors.yaml"
         catalog = load_factor_catalog(path)
 
-        self.assertEqual(catalog.default_status, "disabled")
+        self.assertEqual(catalog.default_status, "watch")
         self.assertEqual(catalog.status_for("alpha_040"), "watch")
-        self.assertEqual(catalog.status_for("alpha_059"), "disabled")
-        self.assertEqual(catalog.status_for("alpha_077"), "disabled")
+        self.assertEqual(catalog.status_for("alpha_059"), "watch")
+        self.assertEqual(catalog.status_for("alpha_077"), "watch")
         self.assertEqual(
             catalog.select(("alpha_040", "alpha_059", "alpha_077", "alpha_101")),
-            ("alpha_040", "alpha_101"),
+            ("alpha_040", "alpha_059", "alpha_077", "alpha_101"),
         )
 
 
 class Alpha101RawAdapterTest(unittest.TestCase):
-    def test_raw_adapter_uses_typical_price_and_metadata(self):
+    def test_raw_adapter_builds_qfq_vwap_and_dated_classification(self):
+        dates = pd.date_range("2025-01-01", periods=3, freq="B")
+        volume = np.array([1000.0, 1100.0, 1200.0])
+        unadjusted_vwap = np.array([10.0, 10.2, 11.0])
+        raw = {
+            "000001": pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [4.9, 10.1, 10.9],
+                    "close": [5.1, 10.3, 11.1],
+                    "high": [5.2, 10.4, 11.2],
+                    "low": [4.8, 10.0, 10.8],
+                    "volume": volume,
+                    "amount": unadjusted_vwap * volume / 10.0,
+                    "adj_factor": [1.0, 2.0, 2.0],
+                }
+            )
+        }
+        metadata = pd.DataFrame(
+            {
+                "date": dates,
+                "symbol": ["000001"] * 3,
+                "industry": ["old", "old", "new"],
+            }
+        )
+
+        panels = build_alpha101_panels(raw, metadata=metadata)
+
+        expected_vwap = pd.DataFrame(
+            {"000001": [5.0, 10.2, 11.0]},
+            index=dates,
+        )
+        pd.testing.assert_frame_equal(panels.vwap, expected_vwap, check_freq=False)
+        self.assertEqual(panels.industry["000001"].tolist(), ["old", "old", "new"])
+        self.assertEqual(
+            panels.turnover_value["000001"].tolist(),
+            (raw["000001"]["amount"] * 1000.0).tolist(),
+        )
+
+    def test_static_metadata_is_not_backfilled_across_history(self):
+        dates = pd.date_range("2025-01-01", periods=2, freq="B")
+        raw = {
+            "000001": pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [10.0, 10.1],
+                    "close": [10.1, 10.2],
+                    "high": [10.2, 10.3],
+                    "low": [9.9, 10.0],
+                    "volume": [1000.0, 1100.0],
+                    "vwap": [10.05, 10.15],
+                }
+            )
+        }
+        static = pd.DataFrame({"symbol": ["000001"], "industry": ["current"]})
+
+        panels = build_alpha101_panels(raw, metadata=static)
+
+        self.assertIsNone(panels.industry)
+        with self.assertRaisesRegex(Alpha101DataError, "industry"):
+            Alpha101(panels).calculate("alpha_063")
+
+    def test_industry_is_not_aliased_to_sector_or_subindustry(self):
+        dates = pd.date_range("2025-01-01", periods=2, freq="B")
+        raw = {
+            "000001": pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [10.0, 10.1],
+                    "close": [10.1, 10.2],
+                    "high": [10.2, 10.3],
+                    "low": [9.9, 10.0],
+                    "volume": [1000.0, 1100.0],
+                    "vwap": [10.05, 10.15],
+                    "industry": ["bank", "bank"],
+                }
+            )
+        }
+
+        panels = build_alpha101_panels(raw)
+
+        self.assertEqual(panels.industry["000001"].tolist(), ["bank", "bank"])
+        self.assertIsNone(panels.sector)
+        self.assertIsNone(panels.subindustry)
+        with self.assertRaisesRegex(Alpha101DataError, "sector"):
+            Alpha101(panels).calculate("alpha_058")
+
+    def test_explicit_vwap_on_an_incompatible_price_basis_is_rejected(self):
+        dates = pd.date_range("2025-01-01", periods=2, freq="B")
+        raw = {
+            "000001": pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [10.0, 10.1],
+                    "close": [10.1, 10.2],
+                    "high": [10.2, 10.3],
+                    "low": [9.9, 10.0],
+                    "volume": [1000.0, 1100.0],
+                    "vwap": [20.0, 20.1],
+                }
+            )
+        }
+
+        panels = build_alpha101_panels(raw)
+
+        self.assertTrue(panels.vwap.isna().all().all())
+        with self.assertRaisesRegex(Alpha101DataError, "VWAP-dependent"):
+            Alpha101(panels).calculate("alpha_011")
+
+    def test_missing_vwap_is_not_filled_with_typical_price(self):
+        dates = pd.date_range("2025-01-01", periods=3, freq="B")
+        raw = {
+            "000001": pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [10.0, 10.1, 10.2],
+                    "close": [10.1, 10.2, 10.3],
+                    "high": [10.2, 10.3, 10.4],
+                    "low": [9.9, 10.0, 10.1],
+                    "volume": [1000.0, 1100.0, 1200.0],
+                }
+            )
+        }
+        panels = build_alpha101_panels(raw)
+        self.assertTrue(panels.vwap.isna().all().all())
+        with self.assertRaisesRegex(Alpha101DataError, "VWAP-dependent"):
+            Alpha101(panels).calculate("alpha_011")
+
+    def test_long_adapter_preserves_non_proxy_market_fields(self):
         raw = {}
         dates = pd.date_range("2025-01-01", periods=20, freq="B")
         for number in (1, 2):
+            volume = np.arange(20) + 1000 + number
+            vwap = np.arange(20) + 10.25 + number
             raw[f"{number:06d}"] = pd.DataFrame(
                 {
                     "date": dates,
@@ -174,15 +363,16 @@ class Alpha101RawAdapterTest(unittest.TestCase):
                     "close": np.arange(20) + 10.5 + number,
                     "high": np.arange(20) + 11 + number,
                     "low": np.arange(20) + 9 + number,
-                    "volume": np.arange(20) + 1000 + number,
+                    "volume": volume,
+                    "vwap": vwap,
+                    "amount": vwap * volume / 10.0,
+                    "adj_factor": np.ones(20),
                 }
             )
         metadata = pd.DataFrame({"symbol": [1, 2], "industry": ["a", "b"]})
 
         panels = build_alpha101_panels(raw, metadata=metadata)
-        expected_vwap = (panels.high + panels.low + panels.close) / 3
-        pd.testing.assert_frame_equal(panels.vwap, expected_vwap)
-        self.assertEqual(panels.industry.iloc[0].tolist(), ["a", "b"])
+        self.assertIsNone(panels.industry)
 
         long = alpha101_to_long(raw, "alpha_101", metadata=metadata)
         self.assertEqual(
@@ -195,13 +385,19 @@ class Alpha101RawAdapterTest(unittest.TestCase):
                 "volume",
                 "daily_return",
                 "listing_age_days",
-                "industry",
                 "turnover_value",
             ],
         )
         self.assertEqual(len(long), 40)
         self.assertEqual(long["listing_age_days"].max(), 20)
-        self.assertTrue((long["turnover_value"] == long["close"] * long["volume"]).all())
+        expected_turnover = {
+            (date, f"{number:06d}"): amount * 1000.0
+            for number in (1, 2)
+            for date, amount in zip(dates, raw[f"{number:06d}"]["amount"])
+        }
+        actual_turnover = long.set_index(["date", "symbol"])["turnover_value"]
+        for key, expected in expected_turnover.items():
+            self.assertAlmostEqual(actual_turnover.loc[key], expected)
 
         via_factor_tester = build_long_factor_frame_from_raw(
             raw,

@@ -65,6 +65,7 @@ def _sample_panels(*, with_cap: bool = False) -> Alpha101Panels:
         sector=groups,
         industry=groups,
         subindustry=groups,
+        turnover_value=close * volume * 100.0,
     )
 
 

@@ -1,16 +1,14 @@
 # Alpha101 economic-interpretability lifecycle.
 #
 # `watch` means the factor has a direct, testable A-share hypothesis but is
-# not validated for production use. `disabled` (the default) means it remains
-# callable for formula-reproduction research only and is excluded from normal
-# batch/ML selection. No Alpha101 formula is `active` solely because of a
-# historical backtest.
+# not validated for production use and is the default for unspecified factors.
+# `disabled` is reserved for explicit exclusions that remain callable for
+# formula-reproduction research only. No Alpha101 formula is `active` solely
+# because of a historical backtest.
 #
-# Disabled by default: opaque genetic-program expressions with arbitrary
-# decimal windows/weights, raw-price thresholds or powers, and formulas whose
-# fitted terms collapse algebraically. They can be explicitly re-enabled only
-# after a documented economic hypothesis and out-of-sample long-only test.
-default_status: disabled
+# All formulas remain under research observation unless explicitly disabled;
+# `watch` still requires an out-of-sample long-only test before promotion.
+default_status: watch
 factors:
   # Volatility / price-location / short-horizon reversal hypotheses.
   alpha_001: watch

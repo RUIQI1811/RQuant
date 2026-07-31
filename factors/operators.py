@@ -15,9 +15,9 @@ Panel = pd.DataFrame
 
 
 def window(value: float | int) -> int:
-    """Round a lookback to the nearest positive trading-day integer."""
+    """Floor a lookback to the nearest positive trading-day integer."""
 
-    return max(1, int(np.floor(float(value) + 0.5)))
+    return max(1, int(np.floor(float(value))))
 
 
 def replace_inf(value: Panel) -> Panel:

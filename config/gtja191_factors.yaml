@@ -1,14 +1,13 @@
 # GTJA191 economic-interpretability lifecycle.
 #
 # `watch` means the formula expresses a direct, testable A-share hypothesis;
-# it is not a production recommendation. `disabled` (the default) preserves
-# the formula for reproduction only and excludes it from normal batch/ML
-# selection. No factor is `active` solely because of a historical backtest.
+# it is not a production recommendation and is the default for unspecified
+# factors. `disabled` is reserved for explicit exclusions that remain callable
+# for reproduction only. No factor is `active` solely because of a historical
+# backtest.
 #
-# Complex composites with arbitrary fitted weights, raw-price thresholds or
-# powers, opaque nested ranks, and external-data expressions without a clear
-# stock-selection mechanism remain disabled until they have both a documented
-# economic hypothesis and an out-of-sample long-only validation.
+# All formulas remain under research observation unless explicitly disabled;
+# `watch` still requires an out-of-sample long-only test before promotion.
 default_status: watch
 default_direction: 1
 factors:

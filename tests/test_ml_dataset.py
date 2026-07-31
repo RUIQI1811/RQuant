@@ -266,6 +266,7 @@ class MLDatasetTest(unittest.TestCase):
                     + np.sin(day / (3.0 + index)) * 0.1
                 )
                 open_price = close * (1.0 + 0.001 * np.cos(day / (2.0 + index)))
+                vwap = (open_price + close) / 2.0
                 pd.DataFrame(
                     {
                         "date": dates,
@@ -273,6 +274,7 @@ class MLDatasetTest(unittest.TestCase):
                         "close": close,
                         "high": np.maximum(open_price, close) + 0.1,
                         "low": np.minimum(open_price, close) - 0.1,
+                        "vwap": vwap,
                         "volume": 1_000_000 + index * 100_000 + day * 1000,
                     }
                 ).to_csv(data_dir / f"{symbol}.csv", index=False)

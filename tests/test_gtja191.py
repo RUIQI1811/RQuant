@@ -12,8 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from factors.gtja191 import (  # noqa: E402
     GTJA191,
+    GTJA191_AMOUNT_FACTORS,
     GTJA191DataError,
+    GTJA191FormulaError,
+    GTJA191_FORMULA_NOTES,
     GTJA191_NAMES,
+    GTJA191_UNRESOLVED_FORMULAS,
+    GTJA191_VWAP_FACTORS,
     GTJA191ExternalData,
     GTJA191Panels,
     build_gtja191_panels,
@@ -102,7 +107,8 @@ def _raw_symbol_frames(days: int = 40, symbols: int = 2) -> dict[str, pd.DataFra
                 "high": close + 0.5,
                 "low": close - 0.5,
                 "volume": np.arange(days, dtype=float) + 1000,
-                "amount": (np.arange(days, dtype=float) + 1000) * close / 1000,
+                "amount": (np.arange(days, dtype=float) + 1000) * close / 10,
+                "adj_factor": np.ones(days),
             }
         )
     return output
@@ -167,6 +173,16 @@ class GTJA191OperatorsTest(unittest.TestCase):
         self.assertEqual(actual_count.iloc[-1, 0], 2.0)
         self.assertEqual(actual_sum.iloc[-1, 0], 7.0)
 
+    def test_count_and_sumif_preserve_invalid_condition_rows(self):
+        values = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0]})
+        condition = values > 2.0
+        valid = pd.DataFrame({"a": [False, True, True, True]})
+
+        self.assertTrue(pd.isna(count(condition, 3, valid=valid).iloc[2, 0]))
+        self.assertTrue(pd.isna(sumif(values, 3, condition, valid=valid).iloc[2, 0]))
+        self.assertEqual(count(condition, 3, valid=valid).iloc[3, 0], 2.0)
+        self.assertEqual(sumif(values, 3, condition, valid=valid).iloc[3, 0], 7.0)
+
 
 class GTJA191PanelsTest(unittest.TestCase):
     def test_panels_keep_aligned_market_data_and_default_external_inputs(self):
@@ -187,19 +203,84 @@ class GTJA191PanelsTest(unittest.TestCase):
         self.assertEqual(panels.close.columns.tolist(), ["000001", "000002"])
         self.assertEqual(panels.external, GTJA191ExternalData())
 
+    def test_amount_factors_reject_missing_turnover_without_affecting_other_factors(self):
+        panels = _complete_panels()
+        missing = panels.close * np.nan
+        calculator = GTJA191(GTJA191Panels(**{**panels.__dict__, "amount": missing}))
+
+        self.assertEqual(calculator.calculate(15).shape, panels.close.shape)
+        for name in GTJA191_AMOUNT_FACTORS:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(GTJA191DataError, "point-in-time amount"):
+                    calculator.calculate(name)
+
+    def test_vwap_factors_reject_partial_vwap_without_affecting_other_factors(self):
+        panels = _complete_panels()
+        partial = panels.vwap.copy()
+        partial.iloc[10, 0] = np.nan
+        calculator = GTJA191(GTJA191Panels(**{**panels.__dict__, "vwap": partial}))
+
+        self.assertEqual(calculator.calculate(15).shape, panels.close.shape)
+        for name in GTJA191_VWAP_FACTORS:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(GTJA191DataError, "point-in-time vwap"):
+                    calculator.calculate(name)
+
+    def test_external_fields_must_cover_every_observed_market_date(self):
+        panels = _complete_panels(days=320)
+        benchmark_close = panels.external.benchmark_close.copy()
+        benchmark_close.iloc[100] = np.nan
+        external = GTJA191ExternalData(
+            **{**panels.external.__dict__, "benchmark_close": benchmark_close}
+        )
+
+        with self.assertRaisesRegex(GTJA191DataError, "complete point-in-time"):
+            GTJA191(GTJA191Panels(**{**panels.__dict__, "external": external})).calculate(149)
+
+    def test_style_returns_allow_leading_warmup_but_reject_internal_gaps(self):
+        panels = _complete_panels(days=100)
+        leading = GTJA191ExternalData(
+            **{
+                field: getattr(panels.external, field).copy()
+                for field in panels.external.__dict__
+            }
+        )
+        for field in ("mkt", "smb", "hml"):
+            getattr(leading, field).iloc[:2] = np.nan
+
+        self.assertEqual(
+            GTJA191(
+                GTJA191Panels(**{**panels.__dict__, "external": leading})
+            ).calculate(30).shape,
+            panels.close.shape,
+        )
+
+        internal_gap = leading.mkt.copy()
+        internal_gap.iloc[50] = np.nan
+        broken = GTJA191ExternalData(
+            **{**leading.__dict__, "mkt": internal_gap}
+        )
+        with self.assertRaisesRegex(GTJA191DataError, "complete point-in-time"):
+            GTJA191(
+                GTJA191Panels(**{**panels.__dict__, "external": broken})
+            ).calculate(30)
+
 
 class GTJA191EconomicLifecycleTest(unittest.TestCase):
-    def test_default_config_keeps_only_interpretable_research_hypotheses(self):
+    def test_default_config_keeps_unspecified_factors_on_watch(self):
         path = Path(__file__).resolve().parents[1] / "config" / "gtja191_factors.yaml"
         payload = yaml.safe_load(path.read_text(encoding="utf-8"))
         factors = payload["factors"]
 
-        self.assertEqual(payload["default_status"], "disabled")
+        self.assertEqual(payload["default_status"], "watch")
         self.assertEqual(set(factors.values()), {"watch"})
         self.assertEqual(factors["gtja_042"], "watch")
         self.assertNotIn("gtja_077", factors)
         self.assertNotIn("gtja_086", factors)
         self.assertNotIn("gtja_156", factors)
+        self.assertEqual(factors.get("gtja_077", payload["default_status"]), "watch")
+        self.assertEqual(factors.get("gtja_086", payload["default_status"]), "watch")
+        self.assertEqual(factors.get("gtja_156", payload["default_status"]), "watch")
         self.assertEqual(payload["categories"]["gtja_184"], "price_behavior")
 
 
@@ -283,9 +364,54 @@ class GTJA191MiddleEightyTest(unittest.TestCase):
         with self.assertRaisesRegex(GTJA191DataError, "benchmark_close"):
             GTJA191(panels).calculate(149)
 
+    def test_gtja_149_uses_last_252_filtered_down_market_observations(self):
+        panels = _complete_panels(days=620, symbols=2)
+        benchmark_returns = np.zeros(len(panels.close), dtype=float)
+        down_positions = np.arange(1, len(panels.close), 2)
+        benchmark_returns[down_positions] = np.where(
+            np.arange(len(down_positions)) % 2 == 0,
+            -0.005,
+            -0.015,
+        )
+        benchmark_returns[2::2] = 0.01
+        benchmark_close = pd.Series(
+            100.0 * np.cumprod(1.0 + benchmark_returns),
+            index=panels.close.index,
+        )
+        stock_returns = pd.DataFrame(
+            np.repeat((0.002 + 2.0 * benchmark_returns)[:, None], 2, axis=1),
+            index=panels.close.index,
+            columns=panels.close.columns,
+        )
+        stock_returns.iloc[0] = np.nan
+        external = GTJA191ExternalData(
+            **{**panels.external.__dict__, "benchmark_close": benchmark_close}
+        )
+        calculator = GTJA191(
+            GTJA191Panels(
+                **{
+                    **panels.__dict__,
+                    "returns": stock_returns,
+                    "external": external,
+                }
+            )
+        )
+
+        actual = calculator.calculate(149)
+        first_valid = actual.iloc[:, 0].first_valid_index()
+        self.assertIsNotNone(first_valid)
+        first_position = actual.index.get_loc(first_valid)
+        self.assertEqual(first_position, 503)
+        np.testing.assert_allclose(actual.iloc[first_position].to_numpy(), 2.0)
+        np.testing.assert_allclose(actual.iloc[first_position + 1].to_numpy(), 2.0)
+
     def test_middle_eighty_return_aligned_panels(self):
         for number in range(81, 161):
             with self.subTest(number=number):
+                if normalize_gtja_name(number) in GTJA191_UNRESOLVED_FORMULAS:
+                    with self.assertRaises(GTJA191FormulaError):
+                        self.calculator.calculate(number)
+                    continue
                 result = self.calculator.calculate(number)
                 self.assertEqual(result.shape, self.panels.close.shape)
 
@@ -306,9 +432,62 @@ class GTJA191CompleteLibraryTest(unittest.TestCase):
         expected = expected - self.panels.close
         pd.testing.assert_frame_equal(self.calculator.calculate(191), expected)
 
+    def test_unresolved_source_formulas_fail_explicitly_and_are_documented(self):
+        self.assertEqual(GTJA191_UNRESOLVED_FORMULAS, {"gtja_159", "gtja_181"})
+        for name in GTJA191_UNRESOLVED_FORMULAS:
+            with self.subTest(name=name):
+                self.assertIn(name, GTJA191_FORMULA_NOTES)
+                with self.assertRaisesRegex(GTJA191FormulaError, "unresolved"):
+                    self.calculator.calculate(name)
+
+    def test_all_recorded_source_corrections_are_documented(self):
+        expected = {
+            "gtja_028",
+            "gtja_030",
+            "gtja_035",
+            "gtja_054",
+            "gtja_075",
+            "gtja_078",
+            "gtja_131",
+            "gtja_159",
+            "gtja_165",
+            "gtja_166",
+            "gtja_181",
+            "gtja_183",
+        }
+        self.assertTrue(expected.issubset(GTJA191_FORMULA_NOTES))
+
+    def test_conditional_factors_preserve_formula_warmup(self):
+        expected_first_valid = {
+            "gtja_023": 19,
+            "gtja_038": 19,
+            "gtja_043": 6,
+            "gtja_053": 12,
+            "gtja_058": 20,
+            "gtja_069": 20,
+            "gtja_084": 20,
+            "gtja_093": 20,
+            "gtja_094": 30,
+            "gtja_098": 199,
+            "gtja_128": 14,
+            "gtja_129": 12,
+            "gtja_160": 19,
+            "gtja_174": 19,
+            "gtja_187": 20,
+        }
+        for name, position in expected_first_valid.items():
+            with self.subTest(name=name):
+                actual = self.calculator.calculate(name).iloc[:, 0]
+                self.assertTrue(actual.iloc[:position].isna().all())
+                self.assertTrue(pd.notna(actual.iloc[position]))
+
     def test_all_191_factors_are_callable_and_aligned(self):
         for name in GTJA191_NAMES:
             with self.subTest(name=name):
+                if name in GTJA191_UNRESOLVED_FORMULAS:
+                    with self.assertRaises(GTJA191FormulaError):
+                        self.calculator.calculate(name)
+                    continue
                 result = self.calculator.calculate(name)
                 self.assertEqual(result.index.tolist(), self.panels.close.index.tolist())
                 self.assertEqual(result.columns.tolist(), self.panels.close.columns.tolist())
@@ -332,11 +511,23 @@ class GTJA191RawAdapterTest(unittest.TestCase):
 
         self.assertEqual(exported_names, GTJA191_NAMES)
 
-    def test_raw_adapter_builds_amount_and_typical_vwap(self):
+    def test_raw_adapter_builds_amount_and_true_vwap(self):
         panels = build_gtja191_panels(_raw_symbol_frames())
-        expected_vwap = (panels.high + panels.low + panels.close) / 3.0
+        expected_vwap = panels.close
         pd.testing.assert_frame_equal(panels.vwap, expected_vwap)
         self.assertEqual(panels.close.columns.tolist(), ["000001", "000002"])
+
+    def test_raw_adapter_never_fabricates_missing_amount_from_close_and_volume(self):
+        raw = _raw_symbol_frames()
+        for symbol, frame in raw.items():
+            raw[symbol] = frame.drop(columns="amount").assign(vwap=frame["close"])
+
+        panels = build_gtja191_panels(raw)
+
+        self.assertTrue(panels.amount.isna().all().all())
+        self.assertEqual(GTJA191(panels).calculate(15).shape, panels.close.shape)
+        with self.assertRaisesRegex(GTJA191DataError, "point-in-time amount"):
+            GTJA191(panels).calculate(70)
 
     def test_long_adapter_routes_through_factor_tester(self):
         raw = _raw_symbol_frames()

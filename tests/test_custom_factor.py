@@ -63,6 +63,7 @@ def _raw_data(panels: Alpha101Panels) -> dict[str, pd.DataFrame]:
                 "high": panels.high[symbol].to_numpy(),
                 "low": panels.low[symbol].to_numpy(),
                 "volume": panels.volume[symbol].to_numpy(),
+                "vwap": panels.vwap[symbol].to_numpy(),
                 "turnover_value": panels.turnover_value[symbol].to_numpy(),
             }
         )
@@ -106,6 +107,21 @@ class CustomFactorTest(unittest.TestCase):
         fallback = CustomFactors(missing).calculate_many(on_error="nan")
         self.assertTrue(fallback["custom_001"].isna().all().all())
         self.assertFalse(fallback["custom_002"].isna().all().all())
+
+        partial = panels.turnover_value.copy()
+        partial.iloc[0, 0] = np.nan
+        missing = Alpha101Panels(**{**panels.__dict__, "turnover_value": partial})
+        with self.assertRaisesRegex(CustomFactorDataError, "missing 1 observed"):
+            CustomFactors(missing).calculate("custom_001")
+
+    def test_missing_vwap_is_explicit(self):
+        panels = _panels()
+        partial = panels.vwap.copy()
+        partial.iloc[0, 0] = np.nan
+        missing = Alpha101Panels(**{**panels.__dict__, "vwap": partial})
+
+        with self.assertRaisesRegex(CustomFactorDataError, "missing 1 observed"):
+            CustomFactors(missing).calculate("custom_002")
 
     def test_panel_builder_has_family_specific_error_contract(self):
         with self.assertRaises(CustomFactorDataError):

@@ -40,6 +40,17 @@ from factors.operators import (
 
 Panel = pd.DataFrame
 GTJA191_NAMES = tuple(f"gtja_{number:03d}" for number in range(1, 192))
+GTJA191_AMOUNT_FACTORS = frozenset(
+    f"gtja_{number:03d}" for number in (70, 95, 132, 144)
+)
+GTJA191_VWAP_FACTORS = frozenset(
+    f"gtja_{number:03d}"
+    for number in (
+        7, 8, 12, 13, 16, 17, 26, 36, 39, 41, 44, 45, 61, 64, 73, 74,
+        77, 87, 90, 92, 101, 108, 114, 119, 120, 121, 124, 125, 130, 131,
+        138, 154, 156, 163, 170, 179,
+    )
+)
 GTJA191_MARKET_RELATED_FACTORS = frozenset(
     f"gtja_{number:03d}" for number in (30, 75, 149, 181, 182)
 )
@@ -73,7 +84,20 @@ GTJA191_FORMULA_NOTES: dict[str, str] = {
     "gtja_054": "Use the original report's explicit 10-day STD window.",
     "gtja_075": "Benchmark OPEN and CLOSE map to their semantic index fields.",
     "gtja_078": "MA is interpreted as the report-defined rolling MEAN.",
+    "gtja_131": "Correct the published DELAT spelling to DELTA.",
+    "gtja_159": (
+        "Unresolved source expression subtracts SUM(price, n) from one CLOSE; "
+        "no unique dimensionally consistent correction is documented."
+    ),
+    "gtja_165": "Resolve the published numerator parentheses using the original appendix.",
+    "gtja_166": "Resolve the published denominator parentheses using the original appendix.",
+    "gtja_181": (
+        "Unresolved source expression mixes a stock return deviation with squared "
+        "benchmark index-level deviations."
+    ),
+    "gtja_183": "Resolve the published SUMAC parentheses using the original appendix.",
 }
+GTJA191_UNRESOLVED_FORMULAS = frozenset(("gtja_159", "gtja_181"))
 
 
 class GTJA191Error(ValueError):
@@ -265,19 +289,34 @@ def regresi(dependent: Panel, independent: Panel, periods: int | float) -> Panel
     return _rolling_regression(dependent, independent, periods)[1]
 
 
-def count(condition: Panel, periods: int | float) -> Panel:
+def count(
+    condition: Panel,
+    periods: int | float,
+    *,
+    valid: Panel | None = None,
+) -> Panel:
     """Count true observations over a complete rolling window."""
 
     window = _window(periods)
     numeric = condition.astype(float)
+    if valid is not None:
+        numeric = numeric.where(valid)
     return numeric.rolling(window, min_periods=window).sum()
 
 
-def sumif(value: Panel, periods: int | float, condition: Panel) -> Panel:
+def sumif(
+    value: Panel,
+    periods: int | float,
+    condition: Panel,
+    *,
+    valid: Panel | None = None,
+) -> Panel:
     """Sum values satisfying a condition over a complete rolling window."""
 
     window = _window(periods)
     selected = value.where(condition, 0.0).where(value.notna())
+    if valid is not None:
+        selected = selected.where(valid)
     return selected.rolling(window, min_periods=window).sum()
 
 
@@ -323,6 +362,63 @@ def _broadcast_series(series: pd.Series, template: Panel) -> Panel:
     return pd.DataFrame(values, index=template.index, columns=template.columns)
 
 
+def _filtered_regbeta(
+    dependent: Panel,
+    independent: Panel,
+    condition: Panel,
+    periods: int | float,
+) -> Panel:
+    """Rolling beta over the latest qualifying observations selected by FILTER.
+
+    FILTER shortens the input sequence.  A calendar-day rolling window over a
+    NaN-masked series is therefore not equivalent: it would require every day
+    in the window to qualify.  The last fitted beta is retained until another
+    qualifying observation arrives, matching the unchanged filtered sequence.
+    """
+
+    window = _window(periods)
+    left, right = dependent.align(independent, join="outer")
+    selected = condition.reindex(index=left.index, columns=left.columns)
+    output = pd.DataFrame(np.nan, index=left.index, columns=left.columns, dtype=float)
+    for column_index, column in enumerate(left.columns):
+        y_values = left[column].to_numpy(dtype=float)
+        x_values = right[column].to_numpy(dtype=float)
+        mask = selected[column].fillna(False).to_numpy(dtype=bool)
+        qualifying = np.flatnonzero(
+            mask & np.isfinite(y_values) & np.isfinite(x_values)
+        )
+        if len(qualifying) < window:
+            continue
+        x_selected = x_values[qualifying]
+        y_selected = y_values[qualifying]
+
+        def rolling_sum(values: np.ndarray) -> np.ndarray:
+            cumulative = np.concatenate(([0.0], np.cumsum(values, dtype=float)))
+            return cumulative[window:] - cumulative[:-window]
+
+        sum_x = rolling_sum(x_selected)
+        sum_y = rolling_sum(y_selected)
+        sum_xx = rolling_sum(x_selected * x_selected)
+        sum_xy = rolling_sum(x_selected * y_selected)
+        denominator = window * sum_xx - sum_x * sum_x
+        numerator = window * sum_xy - sum_x * sum_y
+        betas = np.divide(
+            numerator,
+            denominator,
+            out=np.full_like(numerator, np.nan),
+            where=~np.isclose(denominator, 0.0),
+        )
+        event_rows = qualifying[window - 1 :]
+        for event_index, row_index in enumerate(event_rows):
+            next_row = (
+                event_rows[event_index + 1]
+                if event_index + 1 < len(event_rows)
+                else len(left)
+            )
+            output.iloc[row_index:next_row, column_index] = betas[event_index]
+    return output
+
+
 def _multifactor_residual(
     dependent: Panel,
     factors: tuple[pd.Series, ...],
@@ -363,6 +459,14 @@ class GTJA191:
 
     def calculate(self, name: str | int) -> Panel:
         normalized = normalize_gtja_name(name)
+        if normalized in GTJA191_UNRESOLVED_FORMULAS:
+            raise GTJA191FormulaError(
+                f"{normalized} is unresolved: {GTJA191_FORMULA_NOTES[normalized]}"
+            )
+        if normalized in GTJA191_AMOUNT_FACTORS:
+            self._require_panel(normalized, "amount")
+        if normalized in GTJA191_VWAP_FACTORS:
+            self._require_panel(normalized, "vwap")
         method = getattr(self, normalized, None)
         if method is None:
             raise KeyError(f"GTJA191 factor is not implemented: {normalized}")
@@ -387,30 +491,69 @@ class GTJA191:
                 output[name] = self.d.close.copy() * np.nan
         return output
 
+    def _require_panel(self, factor_name: str, field: str) -> Panel:
+        value = getattr(self.d, field)
+        observed = self.d.close.notna()
+        missing = observed & ~np.isfinite(value)
+        if missing.any().any():
+            raise GTJA191DataError(
+                f"{factor_name} requires complete point-in-time {field}; "
+                f"missing {int(missing.to_numpy().sum())} observed market rows"
+            )
+        return value
+
     def _require_external(self, factor_name: str, *fields: str) -> tuple[pd.Series, ...]:
         missing = [field for field in fields if getattr(self.d.external, field) is None]
         if missing:
             raise GTJA191DataError(
                 f"{factor_name} requires external fields: {', '.join(missing)}"
             )
-        return tuple(getattr(self.d.external, field) for field in fields)
+        required_dates = self.d.close.notna().any(axis=1)
+        values: list[pd.Series] = []
+        incomplete: list[str] = []
+        for field in fields:
+            series = pd.to_numeric(
+                getattr(self.d.external, field), errors="coerce"
+            ).reindex(self.d.close.index)
+            required_values = series.loc[required_dates]
+            finite = np.isfinite(required_values)
+            if field in {"mkt", "smb", "hml"}:
+                valid_positions = np.flatnonzero(finite.to_numpy())
+                has_gap = (
+                    len(valid_positions) == 0
+                    or not finite.iloc[valid_positions[0] :].all()
+                )
+            else:
+                has_gap = not finite.all()
+            if has_gap:
+                incomplete.append(field)
+            values.append(series)
+        if incomplete:
+            raise GTJA191DataError(
+                f"{factor_name} requires complete point-in-time external fields: "
+                f"{', '.join(incomplete)}"
+            )
+        return tuple(values)
 
     def _signed_volume(self) -> Panel:
         previous = delay(self.d.close, 1)
+        valid = self.d.close.notna() & previous.notna() & self.d.volume.notna()
         return self.d.volume.where(self.d.close > previous, -self.d.volume).where(
             self.d.close != previous,
             0.0,
-        )
+        ).where(valid)
 
     def _dtm(self) -> Panel:
         previous_open = delay(self.d.open, 1)
         value = element_max(self.d.high - self.d.open, self.d.open - previous_open)
-        return value.where(self.d.open > previous_open, 0.0)
+        valid = self.d.open.notna() & previous_open.notna() & self.d.high.notna()
+        return value.where(self.d.open > previous_open, 0.0).where(valid)
 
     def _dbm(self) -> Panel:
         previous_open = delay(self.d.open, 1)
         value = element_max(self.d.open - self.d.low, self.d.open - previous_open)
-        return value.where(self.d.open < previous_open, 0.0)
+        valid = self.d.open.notna() & previous_open.notna() & self.d.low.notna()
+        return value.where(self.d.open < previous_open, 0.0).where(valid)
 
     def gtja_001(self) -> Panel:
         return -correlation(
@@ -430,7 +573,10 @@ class GTJA191:
         previous = delay(self.d.close, 1)
         up = self.d.close - element_min(self.d.low, previous)
         down = self.d.close - element_max(self.d.high, previous)
-        value = up.where(self.d.close > previous, down).where(self.d.close != previous, 0.0)
+        valid = self.d.close.notna() & previous.notna() & self.d.low.notna() & self.d.high.notna()
+        value = up.where(self.d.close > previous, down).where(
+            self.d.close != previous, 0.0
+        ).where(valid)
         return ts_sum(value, 6)
 
     def gtja_004(self) -> Panel:
@@ -472,7 +618,7 @@ class GTJA191:
 
     def gtja_010(self) -> Panel:
         value = self.d.close.where(self.d.returns >= 0, stddev(self.d.returns, 20))
-        return rank(ts_max(value.pow(2), 5))
+        return rank(ts_max(value.where(self.d.close.notna() & self.d.returns.notna()).pow(2), 5))
 
     def gtja_011(self) -> Panel:
         value = _safe_div(
@@ -512,7 +658,7 @@ class GTJA191:
         return lower.where(self.d.close < previous, higher).where(
             self.d.close != previous,
             0.0,
-        )
+        ).where(self.d.close.notna() & previous.notna())
 
     def gtja_020(self) -> Panel:
         previous = delay(self.d.close, 6)
@@ -528,8 +674,9 @@ class GTJA191:
     def gtja_023(self) -> Panel:
         volatility = stddev(self.d.close, 20)
         previous = delay(self.d.close, 1)
-        up = sma_cn(volatility.where(self.d.close > previous, 0.0), 20, 1)
-        down = sma_cn(volatility.where(self.d.close <= previous, 0.0), 20, 1)
+        valid = volatility.notna() & self.d.close.notna() & previous.notna()
+        up = sma_cn(volatility.where(self.d.close > previous, 0.0).where(valid), 20, 1)
+        down = sma_cn(volatility.where(self.d.close <= previous, 0.0).where(valid), 20, 1)
         return _safe_div(up, up + down) * 100.0
 
     def gtja_024(self) -> Panel:
@@ -598,7 +745,10 @@ class GTJA191:
         return -rank(value - delay(value, 10))
 
     def gtja_038(self) -> Panel:
-        return (-delta(self.d.high, 2)).where(mean(self.d.high, 20) < self.d.high, 0.0)
+        average = mean(self.d.high, 20)
+        change = -delta(self.d.high, 2)
+        valid = average.notna() & change.notna() & self.d.high.notna()
+        return change.where(average < self.d.high, 0.0).where(valid)
 
     def gtja_039(self) -> Panel:
         left = rank(decay_linear(delta(self.d.close, 2), 8))
@@ -613,8 +763,9 @@ class GTJA191:
 
     def gtja_040(self) -> Panel:
         previous = delay(self.d.close, 1)
-        up = ts_sum(self.d.volume.where(self.d.close > previous, 0.0), 26)
-        down = ts_sum(self.d.volume.where(self.d.close <= previous, 0.0), 26)
+        valid = self.d.close.notna() & previous.notna() & self.d.volume.notna()
+        up = ts_sum(self.d.volume.where(self.d.close > previous, 0.0).where(valid), 26)
+        down = ts_sum(self.d.volume.where(self.d.close <= previous, 0.0).where(valid), 26)
         return _safe_div(up, down) * 100.0
 
     def gtja_041(self) -> Panel:
@@ -668,8 +819,9 @@ class GTJA191:
         )
         current_sum = self.d.high + self.d.low
         previous_sum = previous_high + previous_low
-        down = movement.where(current_sum < previous_sum, 0.0)
-        up = movement.where(current_sum > previous_sum, 0.0)
+        valid = movement.notna() & current_sum.notna() & previous_sum.notna()
+        down = movement.where(current_sum < previous_sum, 0.0).where(valid)
+        up = movement.where(current_sum > previous_sum, 0.0).where(valid)
         return up, down
 
     def gtja_049(self) -> Panel:
@@ -698,7 +850,9 @@ class GTJA191:
         return _safe_div(numerator, denominator) * 100.0
 
     def gtja_053(self) -> Panel:
-        return count(self.d.close > delay(self.d.close, 1), 12) / 12.0 * 100.0
+        previous = delay(self.d.close, 1)
+        valid = self.d.close.notna() & previous.notna()
+        return count(self.d.close > previous, 12, valid=valid) / 12.0 * 100.0
 
     def gtja_054(self) -> Panel:
         value = stddev((self.d.close - self.d.open).abs(), 10) + (self.d.close - self.d.open)
@@ -744,13 +898,18 @@ class GTJA191:
         return sma_cn(value, 3, 1)
 
     def gtja_058(self) -> Panel:
-        return count(self.d.close > delay(self.d.close, 1), 20) / 20.0 * 100.0
+        previous = delay(self.d.close, 1)
+        valid = self.d.close.notna() & previous.notna()
+        return count(self.d.close > previous, 20, valid=valid) / 20.0 * 100.0
 
     def gtja_059(self) -> Panel:
         previous = delay(self.d.close, 1)
         up = self.d.close - element_min(self.d.low, previous)
         down = self.d.close - element_max(self.d.high, previous)
-        value = up.where(self.d.close > previous, down).where(self.d.close != previous, 0.0)
+        valid = self.d.close.notna() & previous.notna() & self.d.low.notna() & self.d.high.notna()
+        value = up.where(self.d.close > previous, down).where(
+            self.d.close != previous, 0.0
+        ).where(valid)
         return ts_sum(value, 20)
 
     def gtja_060(self) -> Panel:
@@ -807,7 +966,7 @@ class GTJA191:
         difference = dtm - dbm
         result = _safe_div(difference, dbm)
         result = result.where(dtm <= dbm, _safe_div(difference, dtm))
-        return result.where(dtm != dbm, 0.0)
+        return result.where(dtm != dbm, 0.0).where(dtm.notna() & dbm.notna())
 
     def gtja_070(self) -> Panel:
         return stddev(self.d.amount, 6)
@@ -848,8 +1007,13 @@ class GTJA191:
         )
         benchmark_down = benchmark_close < benchmark_open
         down_panel = _broadcast_series(benchmark_down.astype(float), self.d.close).astype(bool)
-        numerator = count((self.d.close > self.d.open) & down_panel, 50)
-        denominator = count(down_panel, 50)
+        valid = self.d.close.notna() & self.d.open.notna()
+        numerator = count(
+            (self.d.close > self.d.open) & down_panel,
+            50,
+            valid=valid,
+        )
+        denominator = count(down_panel, 50, valid=valid)
         return _safe_div(numerator, denominator)
 
     def gtja_076(self) -> Panel:
@@ -925,7 +1089,8 @@ class GTJA191:
     def gtja_093(self) -> Panel:
         previous = delay(self.d.open, 1)
         value = element_max(self.d.open - self.d.low, self.d.open - previous)
-        return ts_sum(value.where(self.d.open < previous, 0.0), 20)
+        valid = self.d.open.notna() & previous.notna() & self.d.low.notna()
+        return ts_sum(value.where(self.d.open < previous, 0.0).where(valid), 20)
 
     def gtja_094(self) -> Panel:
         return ts_sum(self._signed_volume(), 30)
@@ -943,7 +1108,10 @@ class GTJA191:
     def gtja_098(self) -> Panel:
         average = mean(self.d.close, 100)
         slope = _safe_div(delta(average, 100), delay(self.d.close, 100))
-        return (-(self.d.close - ts_min(self.d.close, 100))).where(slope <= .05, -delta(self.d.close, 3))
+        low_branch = -(self.d.close - ts_min(self.d.close, 100))
+        high_branch = -delta(self.d.close, 3)
+        valid = slope.notna() & low_branch.notna() & high_branch.notna()
+        return low_branch.where(slope <= .05, high_branch).where(valid)
 
     def gtja_099(self) -> Panel:
         return -rank(covariance(rank(self.d.close), rank(self.d.volume), 5))
@@ -1063,13 +1231,15 @@ class GTJA191:
     def gtja_128(self) -> Panel:
         typical = (self.d.high + self.d.low + self.d.close) / 3
         previous = delay(typical, 1)
-        up = ts_sum((typical * self.d.volume).where(typical > previous, 0.0), 14)
-        down = ts_sum((typical * self.d.volume).where(typical < previous, 0.0), 14)
+        traded = typical * self.d.volume
+        valid = typical.notna() & previous.notna() & self.d.volume.notna()
+        up = ts_sum(traded.where(typical > previous, 0.0).where(valid), 14)
+        down = ts_sum(traded.where(typical < previous, 0.0).where(valid), 14)
         return 100 - _safe_div(pd.DataFrame(100.0, index=up.index, columns=up.columns), 1 + _safe_div(up, down))
 
     def gtja_129(self) -> Panel:
         change = self.d.close - delay(self.d.close, 1)
-        return ts_sum((-change).where(change < 0, 0.0), 12)
+        return ts_sum((-change).where(change < 0, 0.0).where(change.notna()), 12)
 
     def gtja_130(self) -> Panel:
         numerator = rank(decay_linear(correlation((self.d.high + self.d.low) / 2, mean(self.d.volume, 40), 9), 10))
@@ -1139,8 +1309,13 @@ class GTJA191:
 
     def gtja_144(self) -> Panel:
         value = _safe_div(self.d.returns.abs(), self.d.amount)
-        condition = self.d.close < delay(self.d.close, 1)
-        return _safe_div(sumif(value, 20, condition), count(condition, 20))
+        previous = delay(self.d.close, 1)
+        condition = self.d.close < previous
+        valid = value.notna() & self.d.close.notna() & previous.notna()
+        return _safe_div(
+            sumif(value, 20, condition, valid=valid),
+            count(condition, 20, valid=valid),
+        )
 
     def gtja_145(self) -> Panel:
         return _safe_div(mean(self.d.volume, 9) - mean(self.d.volume, 26), mean(self.d.volume, 12)) * 100
@@ -1163,8 +1338,13 @@ class GTJA191:
         benchmark = _broadcast_series(benchmark_close, self.d.close)
         benchmark_return = _safe_div(benchmark - delay(benchmark, 1), delay(benchmark, 1))
         down = benchmark_return < 0
-        stock_return = self.d.returns.where(down)
-        return regbeta(stock_return, benchmark_return.where(down), 252)
+        valid = self.d.returns.notna() & benchmark_return.notna()
+        return _filtered_regbeta(
+            self.d.returns,
+            benchmark_return,
+            down & valid,
+            252,
+        )
 
     def gtja_150(self) -> Panel:
         return (self.d.close + self.d.high + self.d.low) / 3 * self.d.volume
@@ -1204,16 +1384,19 @@ class GTJA191:
         return _safe_div((self.d.high - smooth) - (self.d.low - smooth), self.d.close)
 
     def gtja_159(self) -> Panel:
-        previous = delay(self.d.close, 1)
-        low = element_min(self.d.low, previous); high = element_max(self.d.high, previous)
-        def component(window: int) -> Panel:
-            return _safe_div(self.d.close - ts_sum(low, window), ts_sum(high - low, window))
-        value = component(6) * 12 * 24 + component(12) * 6 * 24 + component(24) * 6 * 12
-        return value * 100 / (6 * 12 + 6 * 24 + 12 * 24)
+        raise GTJA191FormulaError(
+            f"gtja_159 is unresolved: {GTJA191_FORMULA_NOTES['gtja_159']}"
+        )
 
     def gtja_160(self) -> Panel:
         volatility = stddev(self.d.close, 20)
-        return sma_cn(volatility.where(self.d.close <= delay(self.d.close, 1), 0.0), 20, 1)
+        previous = delay(self.d.close, 1)
+        valid = volatility.notna() & self.d.close.notna() & previous.notna()
+        return sma_cn(
+            volatility.where(self.d.close <= previous, 0.0).where(valid),
+            20,
+            1,
+        )
 
     def _true_range(self) -> Panel:
         previous = delay(self.d.close, 1)
@@ -1226,8 +1409,15 @@ class GTJA191:
         hd = self.d.high - delay(self.d.high, 1)
         ld = delay(self.d.low, 1) - self.d.low
         tr_sum = ts_sum(self._true_range(), 14)
-        plus = _safe_div(ts_sum(ld.where((ld > 0) & (ld > hd), 0.0), 14) * 100, tr_sum)
-        minus = _safe_div(ts_sum(hd.where((hd > 0) & (hd > ld), 0.0), 14) * 100, tr_sum)
+        valid = hd.notna() & ld.notna()
+        plus = _safe_div(
+            ts_sum(ld.where((ld > 0) & (ld > hd), 0.0).where(valid), 14) * 100,
+            tr_sum,
+        )
+        minus = _safe_div(
+            ts_sum(hd.where((hd > 0) & (hd > ld), 0.0).where(valid), 14) * 100,
+            tr_sum,
+        )
         return mean(_safe_div((plus - minus).abs(), plus + minus) * 100, 6)
 
     def _accumulated_deviation(self, window: int) -> Panel:
@@ -1247,7 +1437,10 @@ class GTJA191:
 
     def gtja_164(self) -> Panel:
         change = self.d.close - delay(self.d.close, 1)
-        reciprocal = _safe_div(pd.DataFrame(1.0, index=change.index, columns=change.columns), change).where(change > 0, 1.0)
+        reciprocal = _safe_div(
+            pd.DataFrame(1.0, index=change.index, columns=change.columns),
+            change,
+        ).where(change > 0, 1.0).where(change.notna())
         value = _safe_div((reciprocal - ts_min(reciprocal, 12)) * 100, self.d.high - self.d.low)
         return sma_cn(value, 13, 2)
 
@@ -1292,7 +1485,13 @@ class GTJA191:
 
     def gtja_174(self) -> Panel:
         volatility = stddev(self.d.close, 20)
-        return sma_cn(volatility.where(self.d.close > delay(self.d.close, 1), 0.0), 20, 1)
+        previous = delay(self.d.close, 1)
+        valid = volatility.notna() & self.d.close.notna() & previous.notna()
+        return sma_cn(
+            volatility.where(self.d.close > previous, 0.0).where(valid),
+            20,
+            1,
+        )
 
     def gtja_175(self) -> Panel:
         return mean(self._true_range(), 6)
@@ -1313,21 +1512,25 @@ class GTJA191:
     def gtja_180(self) -> Panel:
         change = delta(self.d.close, 7)
         active = -ts_rank(change.abs(), 60) * np.sign(change)
-        return active.where(self.d.volume > mean(self.d.volume, 20), -self.d.volume)
+        average_volume = mean(self.d.volume, 20)
+        valid = active.notna() & self.d.volume.notna() & average_volume.notna()
+        return active.where(
+            self.d.volume > average_volume,
+            -self.d.volume,
+        ).where(valid)
 
     def gtja_181(self) -> Panel:
-        (benchmark_close,) = self._require_external("gtja_181", "benchmark_close")
-        benchmark = _broadcast_series(benchmark_close, self.d.close)
-        stock_deviation = self.d.returns - mean(self.d.returns, 20)
-        benchmark_deviation = benchmark - mean(benchmark, 20)
-        return _safe_div(ts_sum(stock_deviation - benchmark_deviation.pow(2), 20), ts_sum(benchmark_deviation.pow(3), 20))
+        raise GTJA191FormulaError(
+            f"gtja_181 is unresolved: {GTJA191_FORMULA_NOTES['gtja_181']}"
+        )
 
     def gtja_182(self) -> Panel:
         benchmark_open, benchmark_close = self._require_external("gtja_182", "benchmark_open", "benchmark_close")
         b_open = _broadcast_series(benchmark_open, self.d.close)
         b_close = _broadcast_series(benchmark_close, self.d.close)
         same = ((self.d.close > self.d.open) & (b_close > b_open)) | ((self.d.close < self.d.open) & (b_close < b_open))
-        return count(same, 20) / 20
+        valid = self.d.close.notna() & self.d.open.notna()
+        return count(same, 20, valid=valid) / 20
 
     def gtja_183(self) -> Panel:
         return self._accumulated_deviation(24)
@@ -1345,7 +1548,8 @@ class GTJA191:
     def gtja_187(self) -> Panel:
         previous = delay(self.d.open, 1)
         value = element_max(self.d.high - self.d.open, self.d.open - previous)
-        return ts_sum(value.where(self.d.open > previous, 0.0), 20)
+        valid = self.d.open.notna() & previous.notna() & self.d.high.notna()
+        return ts_sum(value.where(self.d.open > previous, 0.0).where(valid), 20)
 
     def gtja_188(self) -> Panel:
         price_range = self.d.high - self.d.low
@@ -1361,8 +1565,19 @@ class GTJA191:
         squared = (daily - threshold).pow(2)
         above = daily > threshold
         below = daily < threshold
-        numerator = (count(above, 20) - 1) * sumif(squared, 20, below)
-        denominator = count(below, 20) * sumif(squared, 20, above)
+        valid = daily.notna() & threshold.notna() & squared.notna()
+        numerator = (count(above, 20, valid=valid) - 1) * sumif(
+            squared,
+            20,
+            below,
+            valid=valid,
+        )
+        denominator = count(below, 20, valid=valid) * sumif(
+            squared,
+            20,
+            above,
+            valid=valid,
+        )
         return np.log(_safe_div(numerator, denominator))
 
     def gtja_191(self) -> Panel:
@@ -1391,7 +1606,7 @@ def build_gtja191_panels(
 
     base = build_alpha101_panels(raw_data, metadata=metadata)
     if base.turnover_value is None:
-        amount = base.close * base.volume
+        amount = base.close * np.nan
     else:
         amount = base.turnover_value
     external = GTJA191ExternalData(

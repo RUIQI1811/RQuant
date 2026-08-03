@@ -47,8 +47,25 @@ def delay(value: Panel, periods: float | int) -> Panel:
 
 
 def correlation(left: Panel, right: Panel, periods: float | int) -> Panel:
+    """Return a stable rolling Pearson correlation.
+
+    Pandas can emit ``+/-inf`` for a fully observed window when one side is
+    constant because its rolling covariance and variance calculations do not
+    cancel at exactly the same floating-point precision.  The formula engines
+    treat such a window as zero correlation: it contains no co-movement
+    information, but it is not a missing-input or warm-up window.
+    """
+
     lookback = window(periods)
-    return left.rolling(lookback, min_periods=lookback).corr(right)
+    result = left.rolling(lookback, min_periods=lookback).corr(right)
+    left_zero_variance = left.rolling(
+        lookback, min_periods=lookback
+    ).std(ddof=0).eq(0.0)
+    right_zero_variance = right.rolling(
+        lookback, min_periods=lookback
+    ).std(ddof=0).eq(0.0)
+    result = result.mask(left_zero_variance | right_zero_variance, 0.0)
+    return replace_inf(result).clip(lower=-1.0, upper=1.0)
 
 
 def covariance(left: Panel, right: Panel, periods: float | int) -> Panel:

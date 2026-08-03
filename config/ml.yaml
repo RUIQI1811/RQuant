@@ -5,15 +5,15 @@ version: 1
 inputs:
   data: data/raw
   metadata: config/stocklist.csv
-  benchmark_file: null
-  style_factor_file: null
+  benchmark_file: data/context/benchmark_000300.csv
+  style_factor_file: data/context/style_factors.csv
   factor_file: null
   factor_layout: auto
   factor_date_col: date
   factor_symbol_col: symbol
   factor_name_col: factor
   factor_value_col: factor_value
-  context_file: null
+  context_file: data/context/research
   context_date_col: date
   context_symbol_col: symbol
 

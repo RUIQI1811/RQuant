@@ -528,10 +528,14 @@ class Alpha101BatchRunner:
 
         status = pd.DataFrame(status_rows)
         leaderboard = self._leaderboard_cache.copy()
-        manifest = self._manifest(status="completed", base_rows=len(base_returns))
+        failed_count = int(status["status"].eq("failed").sum())
+        manifest = self._manifest(
+            status="partial" if failed_count else "completed",
+            base_rows=len(base_returns),
+        )
         manifest["completed_at"] = _utc_now()
         manifest["success_count"] = int(status["status"].isin(["success", "skipped"]).sum())
-        manifest["failed_count"] = int(status["status"].eq("failed").sum())
+        manifest["failed_count"] = failed_count
         write_long_only_profitability_reports(self.output_dir, leaderboard)
         _atomic_write_json(self.output_dir / "batch_manifest.json", manifest)
         return Alpha101BatchResult(self.output_dir, status, leaderboard)
@@ -646,7 +650,13 @@ def build_leaderboard(
             metadata = _read_json(factor_dir / "run_metadata.json")
             if metadata.get("fingerprint") != fingerprint:
                 continue
-        ic = pd.read_csv(ic_path)
+        ic = _read_csv(ic_path)
+        if ic.empty:
+            continue
+        if "count" in ic.columns:
+            ic = ic.loc[pd.to_numeric(ic["count"], errors="coerce").gt(0)].copy()
+            if ic.empty:
+                continue
         group = _read_csv(factor_dir / "group_summary.csv")
         top_n = _read_csv(factor_dir / "top_n_summary.csv")
         tradable_top_n = _read_csv(factor_dir / "tradable_top_n.csv")
@@ -1103,7 +1113,12 @@ def write_long_only_profitability_reports(
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path) if path.exists() else pd.DataFrame()
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def _read_json(path: Path) -> dict[str, object]:

@@ -1,5 +1,6 @@
 import sys
 import unittest
+import warnings
 from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,7 @@ from domain.factors import FactorEvaluationResult
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reports.factor_tester import (
+    FactorDataError,
     FactorTester,
     FactorTesterConfig,
     _max_drawdown,
@@ -51,6 +53,18 @@ def _test_config(**kwargs):
 
 
 class FactorTesterTest(unittest.TestCase):
+    def test_run_all_rejects_factor_without_usable_lagged_observations(self):
+        df = _sample_factor_frame()
+        df["factor_value"] = float("nan")
+        tester = FactorTester(
+            df,
+            factor_name="empty_factor",
+            config=_test_config(forward_return_windows=(1,), groups=2),
+        )
+
+        with self.assertRaisesRegex(FactorDataError, "no eligible lagged observations"):
+            tester.run_all()
+
     def test_core_profile_keeps_required_reports_and_skips_optional_stages(self):
         tester = FactorTester(
             _sample_factor_frame(),
@@ -136,6 +150,33 @@ class FactorTesterTest(unittest.TestCase):
         self.assertAlmostEqual(summary.loc[0, "rank_ic_mean"], 1.0)
         self.assertAlmostEqual(summary.loc[0, "rank_ic_win_rate"], 1.0)
 
+    def test_extreme_finite_factor_values_do_not_overflow_ic_calculations(self):
+        df = _sample_factor_frame()
+        extreme = [1.0e300, 2.0e300, 3.0e300, 4.0e300]
+        df["factor_value"] = extreme * 2
+        df["industry"] = "test"
+        tester = FactorTester(
+            df,
+            factor_name="extreme_factor",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                min_periods=2,
+            ),
+        )
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", category=RuntimeWarning)
+            ic, _ = tester.ic_test()
+            industry, _ = tester.industry_ic_test()
+            distribution, _ = tester.distribution_test()
+
+        self.assertAlmostEqual(float(ic["ic"].dropna().iloc[0]), 1.0)
+        self.assertAlmostEqual(float(ic["rank_ic"].dropna().iloc[0]), 1.0)
+        self.assertAlmostEqual(float(industry["ic"].dropna().iloc[0]), 1.0)
+        self.assertAlmostEqual(float(industry["rank_ic"].dropna().iloc[0]), 1.0)
+        self.assertTrue(distribution["std"].notna().any())
+
     def test_group_return_and_top_bottom_are_correct(self):
         tester = FactorTester(
             _sample_factor_frame(),
@@ -198,6 +239,31 @@ class FactorTesterTest(unittest.TestCase):
         self.assertEqual(set(regime["market_regime"].dropna()), {"bear", "sideways"})
         self.assertEqual(set(regime_summary["market_regime"]), {"bear", "sideways"})
         self.assertEqual(annual["year"].tolist(), [2025])
+
+    def test_industry_ic_empty_factor_data_does_not_emit_downcast_warning(self):
+        df = _sample_factor_frame()
+        df["factor_value"] = float("nan")
+        df["industry"] = "bank"
+        tester = FactorTester(
+            df,
+            factor_name="empty_factor",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                min_periods=2,
+            ),
+        )
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error",
+                message="Downcasting object dtype arrays.*",
+                category=FutureWarning,
+            )
+            industry, _ = tester.industry_ic_test()
+
+        self.assertEqual(industry["count"].tolist(), [0, 0])
+        self.assertEqual(str(industry["count"].dtype), "int64")
 
     def test_high_and_low_long_only_report_gross_and_after_cost_results(self):
         dates = pd.bdate_range("2025-01-02", periods=3)
@@ -623,6 +689,31 @@ class FactorTesterTest(unittest.TestCase):
         self.assertTrue(ic["ic"].isna().all())
         self.assertTrue(ic["rank_ic"].isna().all())
         self.assertEqual(summary.loc[0, "count"], 0)
+
+    def test_constant_cross_section_produces_nan_exposure_without_warning(self):
+        df = _sample_factor_frame()
+        df["factor_value"] = 1.0
+        df["market_cap"] = [1.0, 2.0, 3.0, 4.0] * 2
+        tester = FactorTester(
+            df,
+            factor_name="constant_factor",
+            config=_test_config(
+                forward_return_windows=(1,),
+                groups=2,
+                min_periods=2,
+            ),
+        )
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error",
+                message="invalid value encountered in divide",
+                category=RuntimeWarning,
+            )
+            exposure = tester.exposure_test()
+
+        market_cap_corr = exposure[exposure["test"].eq("market_cap_corr")]
+        self.assertTrue(market_cap_corr["value"].isna().all())
 
 
 class TopLevelFactorTesterImportTests(unittest.TestCase):

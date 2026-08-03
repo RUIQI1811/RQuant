@@ -125,6 +125,11 @@ def fetch_daily_basic_context(
                 trade_date=trade_date,
                 fields=",".join(DAILY_BASIC_FIELDS),
             )
+            if raw is not None and len(raw) >= 6000:
+                raise ValueError(
+                    f"daily_basic reached the 6000-row provider cap on {trade_date}; "
+                    "completeness cannot be proven"
+                )
             normalized = normalize_daily_basic(raw, trade_date=trade_date)
             _atomic_write_csv(output_path, normalized)
             return trade_date

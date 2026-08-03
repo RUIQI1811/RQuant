@@ -668,6 +668,7 @@ def _check_market_data(
 
     inspected = files if sample_size is None else files[:sample_size]
     invalid_files: list[dict[str, str]] = []
+    vwap_unready_files: list[str] = []
     date_min: str | None = None
     date_max: str | None = None
     for path in inspected:
@@ -675,6 +676,8 @@ def _check_market_data(
         if result["error"]:
             invalid_files.append({"file": path.name, "reason": str(result["error"])})
             continue
+        if not result.get("vwap_ready", False):
+            vwap_unready_files.append(path.name)
         if result["date_min"] is not None:
             date_min = min(date_min, result["date_min"]) if date_min else result["date_min"]
         if result["date_max"] is not None:
@@ -690,6 +693,11 @@ def _check_market_data(
     warnings: list[str] = []
     if fetch_manifest_warning:
         warnings.append(fetch_manifest_warning)
+    if vwap_unready_files:
+        warnings.append(
+            f"{len(vwap_unready_files)} inspected market CSV files cannot build "
+            "a complete same-basis VWAP; VWAP-dependent factors are not runnable"
+        )
     data_age_days: int | None = None
     if date_max is not None:
         latest_date = date.fromisoformat(date_max)
@@ -723,6 +731,8 @@ def _check_market_data(
             "date_max": date_max,
             "data_age_days": data_age_days,
             "invalid_files": invalid_files,
+            "vwap_unready_file_count": len(vwap_unready_files),
+            "vwap_unready_files": vwap_unready_files,
             "fetch_manifest": fetch_manifest,
         },
     )
@@ -782,7 +792,12 @@ def _check_fetch_manifest(
 
 def _inspect_market_csv(path: Path) -> dict[str, str | None]:
     if not re.fullmatch(r"\d{6}", path.stem):
-        return {"error": "filename is not a six-digit symbol", "date_min": None, "date_max": None}
+        return {
+            "error": "filename is not a six-digit symbol",
+            "date_min": None,
+            "date_max": None,
+            "vwap_ready": False,
+        }
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
@@ -792,6 +807,7 @@ def _inspect_market_csv(path: Path) -> dict[str, str | None]:
                     "error": f"missing columns {', '.join(missing)}",
                     "date_min": None,
                     "date_max": None,
+                    "vwap_ready": False,
                 }
             first_date: str | None = None
             last_date: str | None = None
@@ -803,14 +819,40 @@ def _inspect_market_csv(path: Path) -> dict[str, str | None]:
                     continue
                 normalized = _normalize_date(raw_date)
                 if normalized is None:
-                    return {"error": "contains an invalid date", "date_min": None, "date_max": None}
+                    return {
+                        "error": "contains an invalid date",
+                        "date_min": None,
+                        "date_max": None,
+                        "vwap_ready": False,
+                    }
                 first_date = min(first_date, normalized) if first_date else normalized
                 last_date = max(last_date, normalized) if last_date else normalized
             if row_count == 0:
-                return {"error": "contains no data rows", "date_min": None, "date_max": None}
+                return {
+                    "error": "contains no data rows",
+                    "date_min": None,
+                    "date_max": None,
+                    "vwap_ready": False,
+                }
     except (OSError, csv.Error, UnicodeError) as exc:
-        return {"error": f"cannot read file ({type(exc).__name__})", "date_min": None, "date_max": None}
-    return {"error": None, "date_min": first_date, "date_max": last_date}
+        return {
+            "error": f"cannot read file ({type(exc).__name__})",
+            "date_min": None,
+            "date_max": None,
+            "vwap_ready": False,
+        }
+    try:
+        from market.fetch_kline import _read_existing_kline, _research_kline_ready
+
+        vwap_ready = _research_kline_ready(_read_existing_kline(path))
+    except Exception:
+        vwap_ready = False
+    return {
+        "error": None,
+        "date_min": first_date,
+        "date_max": last_date,
+        "vwap_ready": vwap_ready,
+    }
 
 
 def _normalize_date(value: str) -> str | None:

@@ -646,22 +646,27 @@ def cmd_make_ml_dataset(args: argparse.Namespace) -> None:
 
 
 def cmd_fetch_data(args: argparse.Namespace) -> None:
-    from market.fetch_kline import run_from_args
+    from market.fetch_data import run_from_args
 
     result = run_from_args(args)
-    print("\nMarket data fetch complete")
-    print(f"date range: {result['start']} to {result['end']}")
-    print(f"symbols: {result['symbol_count']}")
-    print(f"output: {result['output_dir']}")
-    print(f"outcomes: {result['outcomes']}")
-    print(f"manifest: {result['manifest_path']}")
+    print("\nTushare research-data fetch complete")
+    print(f"bar date range: {result['start']} to {result['end']}")
+    print(f"context date range: {result['context_start']} to {result['end']}")
+    print(f"datasets: {', '.join(result['datasets'])}")
+    for name in result["datasets"]:
+        stage = result["stages"].get(name, {})
+        print(f"{name}: {'complete' if stage.get('ok') else 'partial'}")
+    print(f"bars: {result['output_dir']}")
+    print(f"research context: {result['research_context_dir']}")
+    print(f"suite manifest: {result['manifest_path']}")
     if not result["ok"]:
-        print(f"failed symbols: {result['failed_codes']}")
+        print(f"failed datasets: {result['failed_datasets']}")
         raise SystemExit(2)
     return WorkflowResult.from_mapping(
         {
             "result": result,
             "output_dir": Path(result["output_dir"]),
+            "research_context_dir": Path(result["research_context_dir"]),
             "manifest_path": Path(result["manifest_path"]),
         }
     )
@@ -740,12 +745,31 @@ def cmd_factor_test(args: argparse.Namespace) -> None:
     ) if output else WorkflowResult(result={"factor": args.factor})
 
 
-def cmd_factor_batch(args: argparse.Namespace) -> None:
-    from scripts.test_factor_batch import run_from_args
+def cmd_factor_batch(args: argparse.Namespace) -> CommandResult:
+    from scripts.test_factor_batch import (
+        ALPHA101_OUTPUT,
+        GTJA191_OUTPUT,
+        run_from_args,
+    )
 
     exit_code = run_from_args(args)
-    if exit_code:
-        raise SystemExit(exit_code)
+    output = args.output or {
+        "alpha101": ALPHA101_OUTPUT,
+        "gtja191": GTJA191_OUTPUT,
+        "external": "factor_report/external_batch",
+    }[args.family]
+    output_dir = Path(output)
+    return CommandResult(
+        status="failed" if exit_code else "complete",
+        exit_code=exit_code,
+        outputs={
+            "output_dir": str(output_dir),
+            "batch_manifest": str(output_dir / "batch_manifest.json"),
+            "batch_status": str(output_dir / "batch_status.csv"),
+            "leaderboard": str(output_dir / "leaderboard.csv"),
+        },
+        summary={"family": args.family},
+    )
 
 
 def cmd_factor_correlation(args: argparse.Namespace) -> None:
@@ -1191,7 +1215,10 @@ def build_parser(*, prog: str = "scripts.quant_cli") -> argparse.ArgumentParser:
     )
     add_ml_dataset_arguments(p)
 
-    p = sub.add_parser("fetch-data", help="Fetch and update local qfq daily bars")
+    p = sub.add_parser(
+        "fetch-data",
+        help="Fetch the complete Tushare data contract consumed by RQuant",
+    )
     p.add_argument("--config", default="config/fetch_kline.yaml")
     p.add_argument("--start", default=None, help="YYYYMMDD, YYYY-MM-DD, or today")
     p.add_argument("--end", default=None, help="YYYYMMDD, YYYY-MM-DD, or today")
@@ -1204,11 +1231,42 @@ def build_parser(*, prog: str = "scripts.quant_cli") -> argparse.ArgumentParser:
         help="Evenly throttle Tushare calls; 0 disables, default YAML value is 180",
     )
     p.add_argument("--max-symbols", type=_positive_int, default=None)
+    p.add_argument(
+        "--max-dates",
+        type=_positive_int,
+        default=None,
+        help="Smoke-test only: fetch the first N open context dates",
+    )
+    p.add_argument(
+        "--max-industries",
+        type=_positive_int,
+        default=None,
+        help="Smoke-test only: fetch the first N SW L3 industries",
+    )
+    p.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=(
+            "bars",
+            "daily_basic",
+            "benchmark",
+            "industry",
+            "trade_state",
+            "research_context",
+        ),
+        default=None,
+        help="Subset override; default is every RQuant Tushare 2000-point dataset",
+    )
     p.add_argument("--log", default=None, help="Override log file path")
     p.add_argument(
         "--manifest",
         default=None,
-        help="Checkpoint JSON path; defaults to <out>/_fetch_manifest.json",
+        help="Bar checkpoint path; defaults to <out>/_fetch_manifest.json",
+    )
+    p.add_argument(
+        "--suite-manifest",
+        default=None,
+        help="Overall checkpoint path; defaults to data/context/_tushare_2000_manifest.json",
     )
     p.add_argument(
         "--resume",

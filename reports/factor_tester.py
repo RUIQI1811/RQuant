@@ -22,6 +22,10 @@ TRADING_DAYS_PER_YEAR = 252
 FACTOR_ANALYSIS_PROFILES = ("core", "full")
 
 
+class FactorDataError(ValueError):
+    """Raised when a factor has no usable point-in-time observations."""
+
+
 @dataclass(frozen=True)
 class FactorTesterConfig:
     """Column mapping and test settings for long-format factor data."""
@@ -121,8 +125,61 @@ class _LongOnlyCohort:
 
 
 def _safe_std(series: pd.Series) -> float:
-    value = float(series.std(ddof=1))
+    clean = pd.to_numeric(series, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    if len(clean) < 2:
+        return float("nan")
+    scale = float(clean.abs().max())
+    if scale == 0.0:
+        return 0.0
+    scaled_std = float((clean / scale).std(ddof=1))
+    if not math.isfinite(scaled_std) or (
+        scale > 1.0 and scaled_std > np.finfo("float64").max / scale
+    ):
+        return float("nan")
+    value = scaled_std * scale
     return value if math.isfinite(value) else float("nan")
+
+
+def _stable_correlation(
+    left: pd.Series,
+    right: pd.Series,
+    *,
+    method: str = "pearson",
+) -> float:
+    """Correlate finite values without overflow or zero-variance warnings."""
+
+    pair = pd.DataFrame(
+        {
+            "left": pd.to_numeric(left, errors="coerce"),
+            "right": pd.to_numeric(right, errors="coerce"),
+        }
+    ).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(pair) < 2:
+        return float("nan")
+    if method == "spearman":
+        pair = pair.rank(method="average")
+    elif method != "pearson":
+        raise ValueError(f"unsupported correlation method: {method}")
+
+    left_values = pair["left"].to_numpy(dtype="float64", copy=False)
+    right_values = pair["right"].to_numpy(dtype="float64", copy=False)
+    left_scale = float(np.max(np.abs(left_values)))
+    right_scale = float(np.max(np.abs(right_values)))
+    if left_scale == 0.0 or right_scale == 0.0:
+        return float("nan")
+    left_centered = left_values / left_scale
+    right_centered = right_values / right_scale
+    left_centered = left_centered - left_centered.mean()
+    right_centered = right_centered - right_centered.mean()
+    left_norm = float(np.sqrt(np.dot(left_centered, left_centered)))
+    right_norm = float(np.sqrt(np.dot(right_centered, right_centered)))
+    denominator = left_norm * right_norm
+    if not math.isfinite(denominator) or denominator == 0.0:
+        return float("nan")
+    value = float(np.dot(left_centered, right_centered) / denominator)
+    return float(np.clip(value, -1.0, 1.0)) if math.isfinite(value) else float("nan")
 
 
 def _icir(mean: Optional[float], std: Optional[float]) -> Optional[float]:
@@ -236,7 +293,9 @@ class FactorTester:
         df = self.raw_data.copy()
         df[cfg.date_col] = pd.to_datetime(df[cfg.date_col])
         df[cfg.symbol_col] = df[cfg.symbol_col].astype(str).str.zfill(6)
-        df[cfg.factor_col] = pd.to_numeric(df[cfg.factor_col], errors="coerce")
+        df[cfg.factor_col] = pd.to_numeric(
+            df[cfg.factor_col], errors="coerce"
+        ).replace([np.inf, -np.inf], np.nan)
         if cfg.close_col in df.columns:
             df[cfg.close_col] = pd.to_numeric(df[cfg.close_col], errors="coerce")
         if cfg.volume_col in df.columns:
@@ -421,6 +480,13 @@ class FactorTester:
             len(df),
             time.monotonic() - started_at,
         )
+        usable_count = int(df["factor_processed"].notna().sum())
+        if usable_count == 0:
+            raw_count = int(df["factor_raw"].notna().sum())
+            raise FactorDataError(
+                f"factor {self.factor_name} has no eligible lagged observations "
+                f"(raw_non_null_count={raw_count}, usable_count=0)"
+            )
         coverage, coverage_summary = self.coverage_test()
         distribution, distribution_summary = self.distribution_test()
         ic, ic_summary = self.ic_test()
@@ -674,8 +740,15 @@ class FactorTester:
 
         raw = df["factor_raw"].dropna()
         if len(raw) > 1:
-            z = (raw - raw.mean()) / raw.std(ddof=1)
-            outlier_count = int((z.abs() > 5).sum())
+            raw_scale = float(raw.abs().max())
+            scaled_raw = raw / raw_scale if raw_scale > 0.0 else raw
+            raw_std = float(scaled_raw.std(ddof=1))
+            z = (
+                (scaled_raw - scaled_raw.mean()) / raw_std
+                if math.isfinite(raw_std) and raw_std > 0.0
+                else pd.Series(np.nan, index=raw.index, dtype="float64")
+            )
+            outlier_count = int((z.abs() > 5.0).sum())
         else:
             outlier_count = 0
         summary = pd.DataFrame(
@@ -709,8 +782,10 @@ class FactorTester:
                     ic = np.nan
                     rank_ic = np.nan
                 else:
-                    ic = pair["factor_processed"].corr(pair[ret_col], method="pearson")
-                    rank_ic = pair["factor_processed"].corr(pair[ret_col], method="spearman")
+                    ic = _stable_correlation(pair["factor_processed"], pair[ret_col])
+                    rank_ic = _stable_correlation(
+                        pair["factor_processed"], pair[ret_col], method="spearman"
+                    )
                 rows.append({cfg.date_col: date, "window": int(window), "ic": ic, "rank_ic": rank_ic})
         ic_df = pd.DataFrame(rows)
 
@@ -818,7 +893,11 @@ class FactorTester:
                 how="left",
                 validate="one_to_one",
             )
-            grouped["count"] = grouped["count"].fillna(0).astype("int64")
+            grouped["count"] = (
+                pd.to_numeric(grouped["count"], errors="coerce")
+                .fillna(0)
+                .astype("int64")
+            )
             grouped = grouped.rename(columns={cfg.industry_col: "industry"})
             grouped.insert(1, "window", int(window))
             frames.append(grouped)
@@ -858,6 +937,24 @@ class FactorTester:
         def correlations(left: np.ndarray, right: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             count = np.bincount(codes, minlength=group_count).astype("int64")
             count_float = count.astype("float64")
+            left_scale = np.zeros(group_count, dtype="float64")
+            right_scale = np.zeros(group_count, dtype="float64")
+            np.maximum.at(left_scale, codes, np.abs(left))
+            np.maximum.at(right_scale, codes, np.abs(right))
+            left_denominator = left_scale[codes]
+            right_denominator = right_scale[codes]
+            left = np.divide(
+                left,
+                left_denominator,
+                out=np.zeros_like(left),
+                where=left_denominator > 0.0,
+            )
+            right = np.divide(
+                right,
+                right_denominator,
+                out=np.zeros_like(right),
+                where=right_denominator > 0.0,
+            )
             left_sum = np.bincount(codes, weights=left, minlength=group_count)
             right_sum = np.bincount(codes, weights=right, minlength=group_count)
             left_square_sum = np.bincount(
@@ -961,8 +1058,10 @@ class FactorTester:
         ):
             return np.nan, np.nan
         return (
-            pair["factor_processed"].corr(pair[return_col], method="pearson"),
-            pair["factor_processed"].corr(pair[return_col], method="spearman"),
+            _stable_correlation(pair["factor_processed"], pair[return_col]),
+            _stable_correlation(
+                pair["factor_processed"], pair[return_col], method="spearman"
+            ),
         )
 
     @staticmethod
@@ -1693,6 +1792,9 @@ class FactorTester:
                     columns.append("_market_cap_lagged")
                 valid = daily[columns].dropna(subset=["factor_processed", ret_col]).copy()
                 residual = valid["factor_processed"].astype("float64")
+                residual_scale = float(residual.abs().max()) if not residual.empty else 0.0
+                if math.isfinite(residual_scale) and residual_scale > 0.0:
+                    residual = residual / residual_scale
                 controls: list[str] = []
                 if has_industry and cfg.industry_col:
                     industry_valid = valid[cfg.industry_col].notna()
@@ -1729,9 +1831,13 @@ class FactorTester:
                     neutral_rank_ic = np.nan
                 else:
                     status = "ok"
-                    neutral_ic = pair["neutralized_factor"].corr(pair["forward_return"])
-                    neutral_rank_ic = pair["neutralized_factor"].corr(
-                        pair["forward_return"], method="spearman"
+                    neutral_ic = _stable_correlation(
+                        pair["neutralized_factor"], pair["forward_return"]
+                    )
+                    neutral_rank_ic = _stable_correlation(
+                        pair["neutralized_factor"],
+                        pair["forward_return"],
+                        method="spearman",
                     )
                 rows.append(
                     {
@@ -2171,7 +2277,9 @@ class FactorTester:
                 comparable_ranks = ranks.loc[common]
                 comparable_previous = prev_ranks.loc[common] if prev_ranks is not None else pd.Series(dtype=float)
                 rank_autocorr = (
-                    comparable_ranks.corr(comparable_previous, method="spearman")
+                    _stable_correlation(
+                        comparable_ranks, comparable_previous, method="spearman"
+                    )
                     if (
                         len(common) >= cfg.min_periods
                         and comparable_ranks.nunique() >= 2
@@ -2207,8 +2315,16 @@ class FactorTester:
             for date, daily in df.groupby(cfg.date_col):
                 pair = daily[["factor_processed", "_market_cap_lagged"]].dropna()
                 corr = (
-                    pair["factor_processed"].corr(pair["_market_cap_lagged"], method="spearman")
-                    if len(pair) >= cfg.min_periods
+                    _stable_correlation(
+                        pair["factor_processed"],
+                        pair["_market_cap_lagged"],
+                        method="spearman",
+                    )
+                    if (
+                        len(pair) >= cfg.min_periods
+                        and pair["factor_processed"].nunique() >= 2
+                        and pair["_market_cap_lagged"].nunique() >= 2
+                    )
                     else np.nan
                 )
                 rows.append({"test": "market_cap_corr", cfg.date_col: date, "value": corr, "status": "ok"})

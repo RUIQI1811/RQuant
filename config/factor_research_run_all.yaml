@@ -10,9 +10,11 @@ factor_library:
   factors: [all]
   exclude: []
   ignore_factor_config: false
-  context_file: data/context/daily_basic
+  context_file: data/context/research
   context_date_col: date
   context_symbol_col: symbol
+  benchmark_file: data/context/benchmark_000300.csv
+  style_factor_file: data/context/style_factors.csv
   industry_col: industry
   market_cap_col: market_cap
 

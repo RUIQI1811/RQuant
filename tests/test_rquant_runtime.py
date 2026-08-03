@@ -78,6 +78,9 @@ class RQuantRuntimeTest(unittest.TestCase):
             self.assertEqual(payload["exit_code"], 2)
             self.assertNotIn("supersecret", raw)
             self.assertIn("<redacted>", raw)
+            log = context.log_path.read_text(encoding="utf-8")
+            self.assertIn("run failed: RuntimeError", log)
+            self.assertNotIn("supersecret", log)
 
     def test_run_registry_filters_and_loads_manifests(self):
         with tempfile.TemporaryDirectory() as tmp:

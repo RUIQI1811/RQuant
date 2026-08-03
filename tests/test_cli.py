@@ -96,6 +96,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(fetch_args.max_requests_per_minute, 175)
         self.assertEqual(fetch_args.manifest, "fetch.json")
         self.assertTrue(fetch_args.resume)
+        self.assertIsNone(fetch_args.datasets)
+        self.assertIsNone(fetch_args.max_dates)
         self.assertEqual(factor_args.factor, "custom_002")
         self.assertEqual(batch_args.family, "gtja191")
         self.assertEqual(batch_args.profile, "core")
@@ -115,15 +117,17 @@ class CliTest(unittest.TestCase):
         args = cli.build_parser().parse_args(["fetch-data"])
         partial = {
             "start": "20260101",
+            "context_start": "20260101",
             "end": "20260102",
-            "symbol_count": 2,
+            "datasets": ["bars", "daily_basic"],
+            "stages": {"bars": {"ok": True}, "daily_basic": {"ok": False}},
             "output_dir": "data/raw",
-            "outcomes": {"created": 1},
-            "manifest_path": "data/raw/_fetch_manifest.json",
-            "failed_codes": ["000002"],
+            "research_context_dir": "data/context/research",
+            "manifest_path": "data/context/_tushare_2000_manifest.json",
+            "failed_datasets": ["daily_basic"],
             "ok": False,
         }
-        with patch("market.fetch_kline.run_from_args", return_value=partial):
+        with patch("market.fetch_data.run_from_args", return_value=partial):
             with redirect_stdout(StringIO()):
                 with self.assertRaisesRegex(SystemExit, "2"):
                     cli.cmd_fetch_data(args)
@@ -183,8 +187,24 @@ class CliTest(unittest.TestCase):
     def test_factor_batch_dispatches_to_lifecycle_aware_runner(self):
         args = cli.build_parser().parse_args(["factor-batch", "--family", "alpha101"])
         with patch("scripts.test_factor_batch.run_from_args", return_value=0) as runner:
-            cli.cmd_factor_batch(args)
+            result = cli.cmd_factor_batch(args)
         runner.assert_called_once_with(args)
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.outputs["output_dir"], "factor_report/alpha101_batch")
+        self.assertEqual(
+            result.outputs["batch_manifest"],
+            "factor_report/alpha101_batch/batch_manifest.json",
+        )
+
+    def test_factor_batch_failure_remains_structured_for_run_manifest(self):
+        args = cli.build_parser().parse_args(["factor-batch", "--family", "alpha101"])
+        with patch("scripts.test_factor_batch.run_from_args", return_value=1):
+            result = cli.cmd_factor_batch(args)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(result.summary, {"family": "alpha101"})
 
     def test_factor_run_all_returns_lightweight_command_chain_result(self):
         args = cli.build_parser().parse_args(["factor-run-all"])

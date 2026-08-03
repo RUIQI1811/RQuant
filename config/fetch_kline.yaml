@@ -4,7 +4,7 @@
 
 # 抓取日期范围（YYYYMMDD 或 'today'）
 start: "20100101"
-end: "20270724"
+end: "today"
 
 # 股票清单 CSV 路径（需含 ts_code 与 symbol 列）
 stocklist: "./config/stocklist.csv"
@@ -28,3 +28,38 @@ workers: 8
 # Tushare 请求起始速率上限；全局均匀节流，避免并发突发命中 200 次/分钟限额。
 # 默认留 10% 余量；设为 0 可显式关闭主动节流。
 max_requests_per_minute: 180
+
+# `rquant fetch-data` 默认抓取 RQuant 实际使用的完整 Tushare 2000 积分数据契约。
+# 这里的“完整”指 A 股因子研究/回测输入，不包含基金、期货、外汇和宏观等
+# 与本项目无关的其他 2000 积分接口。
+tushare_2000:
+  datasets:
+    - bars
+    - daily_basic
+    - benchmark
+    - industry
+    - trade_state
+    - research_context
+
+  # daily_basic 的可用历史和当前因子研究统一从 2018-01-01 开始。
+  # CLI 显式传入 --start 时，会同时覆盖行情和上下文起点。
+  context_start: "20180101"
+  benchmark_index: "000300.SH"
+  industry_source: "SW2021"
+  include_suspensions: true
+
+  # Tushare 不同历史接口对少数改码证券使用不同标识。
+  # 仅在明确生效区间内转换为项目使用的稳定 symbol。
+  trade_state_symbol_aliases:
+    - source: "000043"
+      target: "001914"
+      start: "19940928"
+      end: "20191215"
+
+  paths:
+    daily_basic: "./data/context/daily_basic"
+    benchmark: "./data/context/benchmark_000300.csv"
+    industry: "./data/context/sw_industry_membership.csv"
+    trade_state: "./data/context/trade_state"
+    research_context: "./data/context/research"
+    suite_manifest: "./data/context/_tushare_2000_manifest.json"

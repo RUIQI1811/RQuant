@@ -44,6 +44,7 @@ from factors.operators import (
 
 
 Panel = pd.DataFrame
+QFQ_REFERENCE_ADJ_FACTOR_FIELD = "qfq_reference_adj_factor"
 
 
 class Alpha101DataError(ValueError):
@@ -171,7 +172,8 @@ class Alpha101:
         if missing.any().any():
             raise Alpha101DataError(
                 "VWAP-dependent alpha requires explicit vwap/avg or Tushare "
-                "amount, volume, and adj_factor on the same price basis; "
+                "amount, volume, adj_factor, and the qfq reference adjustment "
+                "factor on the same price basis; "
                 f"missing {int(missing.to_numpy().sum())} observed market rows"
             )
         return self.d.vwap
@@ -911,6 +913,7 @@ def _vwap_from_tushare_amount(
     amount: Panel | None,
     volume: Panel,
     adj_factor: Panel | None,
+    qfq_reference_adj_factor: Panel | None,
     low: Panel,
     high: Panel,
 ) -> Panel | None:
@@ -924,7 +927,17 @@ def _vwap_from_tushare_amount(
         latest = adj_factor.apply(
             lambda values: values.dropna().iloc[-1] if values.notna().any() else np.nan
         )
-        unadjusted = unadjusted * adj_factor.div(latest, axis=1)
+        fallback_reference = pd.DataFrame(
+            np.broadcast_to(latest.to_numpy(), adj_factor.shape),
+            index=adj_factor.index,
+            columns=adj_factor.columns,
+        )
+        reference = (
+            fallback_reference
+            if qfq_reference_adj_factor is None
+            else qfq_reference_adj_factor.combine_first(fallback_reference)
+        )
+        unadjusted = unadjusted * _safe_div(adj_factor, reference)
     return _validate_vwap_price_basis(unadjusted, low=low, high=high)
 
 
@@ -936,7 +949,8 @@ def build_alpha101_panels(
     """Build aligned panels from the repository's per-symbol raw CSV frames.
 
     VWAP uses an explicit ``vwap``/``avg`` column when available.  For Tushare
-    qfq bars it is reconstructed from ``amount``, ``volume`` and ``adj_factor``;
+    qfq bars it is reconstructed from ``amount``, ``volume``, ``adj_factor``
+    and the query's ``qfq_reference_adj_factor``;
     typical price is never substituted.  ``advN`` uses daily traded value.
 
     Static classifications in symbol metadata are intentionally not copied
@@ -982,10 +996,17 @@ def build_alpha101_panels(
         dates=dates,
         symbols=symbols,
     )
+    qfq_reference_adj_factor = _wide_field(
+        raw_data,
+        (QFQ_REFERENCE_ADJ_FACTOR_FIELD,),
+        dates=dates,
+        symbols=symbols,
+    )
     calculated_vwap = _vwap_from_tushare_amount(
         amount=amount,
         volume=required["volume"],
         adj_factor=adj_factor,
+        qfq_reference_adj_factor=qfq_reference_adj_factor,
         low=required["low"],
         high=required["high"],
     )

@@ -57,7 +57,8 @@ def clean_daily_frame(
     """Normalize one stock daily bar frame into the trading schema.
 
     The project currently stores qfq OHLCV CSVs. Optional Tushare columns such as
-    pre_close, pct_chg, amount, adj_factor, is_st are preserved when available.
+    pre_close, pct_chg, amount, adj_factor, qfq_reference_adj_factor, is_st are
+    preserved when available.
     Limit flags use pct_chg/pre_close when present and otherwise fall back to
     qfq close returns, which is an approximation.
     """
@@ -77,7 +78,15 @@ def clean_daily_frame(
         out = out[out["date"] <= pd.to_datetime(end_date)].reset_index(drop=True)
 
     numeric_cols = set(
-        PRICE_COLUMNS + ("volume", "pre_close", "pct_chg", "amount", "adj_factor")
+        PRICE_COLUMNS
+        + (
+            "volume",
+            "pre_close",
+            "pct_chg",
+            "amount",
+            "adj_factor",
+            "qfq_reference_adj_factor",
+        )
     )
     for col in numeric_cols.intersection(out.columns):
         out[col] = pd.to_numeric(out[col], errors="coerce")

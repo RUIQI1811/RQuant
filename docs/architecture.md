@@ -18,7 +18,10 @@ DataManager
 
 ## Current Mapping
 
-- DataManager: `market/fetch_kline.py`, `market/data.py`, `market/io.py`
+- DataManager: `market/fetch_data.py`, `market/fetch_kline.py`,
+  `market/fetch_context.py`, `market/fetch_industry.py`,
+  `market/fetch_trade_state.py`, `market/build_research_context.py`,
+  `market/data.py`, `market/io.py`
 - Domain contracts: `domain/` owns cross-boundary values, signals, execution
   records, backtest results, workflow results, and artifact references.
 - UniverseBuilder: `market/data.py::build_stock_pool_by_date`
@@ -53,9 +56,21 @@ DataManager
 - Market-fetch recovery: `market/fetch_kline.py` atomically checkpoints every symbol
   into `_fetch_manifest.json`. Resume accepts only the same date/output/universe
   signature, retries failed or pending symbols, and returns nonzero for partial runs.
+- Governed Tushare suite: `market/fetch_data.py` is the `fetch-data` orchestration
+  boundary. It runs qfq bars plus row adjustment factors and the exact
+  `qfq_reference_adj_factor` used to normalize that query, daily_basic, the configured
+  benchmark, complete SW L3 membership history, daily price limits/suspensions, and
+  the merged research context. Every source keeps its own manifest; the suite stays
+  partial and exits nonzero until every requested source and derived context is complete.
 - Point-in-time research context: `market/fetch_context.py` queries Tushare
-  `daily_basic` once per open trading date, converts market-cap units to yuan, writes
-  atomic date partitions, and blocks partial manifests from factor/ML consumers.
+  `daily_basic` once per open trading date and converts market-cap units to yuan;
+  `market/fetch_industry.py` partitions `index_member_all` by SW L3 to stay below its
+  2,000-row cap and audits excluded non-equity identifiers;
+  `market/fetch_trade_state.py` aligns `stk_limit` to that day's daily_basic universe,
+  preserves legitimate absent limits as nullable rows with `has_price_limit=false`,
+  and applies only date-bounded configured historical symbol aliases; and
+  `market/build_research_context.py` performs an exact-date merge into atomic
+  partitions. Partial manifests remain unreadable to factor/ML consumers.
 - Research-report consistency: `reports/research_report.py` requires valid core JSON,
   checks review dates/status plus signal/portfolio timing fields, fingerprints every
   input, and blocks inconsistent reports unless diagnostic override is explicit.
@@ -116,10 +131,17 @@ the effective direction for every feature.
 and registered custom factors. It owns only operators with identical tested
 semantics across families, including cross-sectional rank, lag, rolling
 correlation/covariance, common rolling reductions, safe division, and linear
-decay. Family-specific definitions such as Chinese `SMA`, GTJA `WMA`,
+decay. Rolling correlation preserves warm-up or missing-input windows as null, but
+maps a fully observed zero-variance window to zero correlation so floating-point
+infinities cannot erase downstream formulas. Family-specific definitions such as Chinese `SMA`, GTJA `WMA`,
 `highday`/`lowday`, and regression operators remain in `factors/gtja191.py`.
 Batch implementation fingerprints include the shared operator file so a future
 operator change cannot silently reuse stale factor reports.
+
+FactorTester treats non-finite factor inputs as unavailable and computes daily,
+industry, market-cap, and neutralized correlations after scale normalization.
+Correlation is invariant to this positive scaling, while extreme finite formulas
+such as `alpha_084` cannot overflow the sum-of-squares calculation.
 
 `factors/correlation.py` diagnoses redundancy inside the factor track. It
 lags factor values by one trading day, calculates Spearman and Pearson correlations

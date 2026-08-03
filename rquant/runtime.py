@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -207,6 +208,13 @@ class RunTracker:
         self.close_logging()
 
     def fail(self, error: BaseException, exit_code: int, *, interrupted: bool = False) -> None:
+        stack = "".join(traceback.format_tb(error.__traceback__))
+        logging.getLogger(__name__).error(
+            "run failed: %s: %s%s",
+            type(error).__name__,
+            error,
+            f"\n{stack}" if stack else "",
+        )
         self._manifest.update(
             status="interrupted" if interrupted else "failed",
             exit_code=exit_code,

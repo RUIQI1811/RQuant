@@ -692,11 +692,41 @@ def load_lifecycle_factors(
     if not isinstance(entries, dict):
         raise ValueError(f"lifecycle config factors must be a mapping: {config_path}")
 
+    # Built-in factor catalogs have a known complete universe.  Honor
+    # ``default_status`` for names omitted from the explicit mapping, exactly
+    # as factor-batch does.  External catalogs remain explicit because their
+    # complete universe is defined by the accompanying data file, not YAML.
+    hint_names = {
+        str(name).strip().lower()
+        for section in (entries, payload.get("categories", {}), payload.get("directions", {}))
+        if isinstance(section, dict)
+        for name in section
+    }
+    filename = config_path.name.lower()
+    if "gtja" in filename or any(name.startswith("gtja_") for name in hint_names):
+        from factors.gtja191 import GTJA191_NAMES, normalize_gtja_name
+
+        universe = GTJA191_NAMES
+        normalized_entries = {
+            normalize_gtja_name(name): entry for name, entry in entries.items()
+        }
+    elif "alpha" in filename or any(name.startswith("alpha_") for name in hint_names):
+        from factors.alpha101 import ALPHA101_NAMES, normalize_alpha_name
+
+        universe = ALPHA101_NAMES
+        normalized_entries = {
+            normalize_alpha_name(name): entry for name, entry in entries.items()
+        }
+    else:
+        universe = tuple(str(name).strip() for name in entries)
+        normalized_entries = {str(name).strip(): entry for name, entry in entries.items()}
+
     factors: list[str] = []
-    for name, entry in entries.items():
+    for name in universe:
+        entry = normalized_entries.get(name, default)
         status = entry.get("status", default) if isinstance(entry, dict) else entry
         if str(status).strip().lower() in selected_statuses:
-            factors.append(str(name).strip())
+            factors.append(name)
     return tuple(factors)
 
 

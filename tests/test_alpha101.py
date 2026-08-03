@@ -86,6 +86,16 @@ class Alpha101OperatorsTest(unittest.TestCase):
         frame = pd.DataFrame({"a": [3.0, 1.0, 2.0]})
         self.assertEqual(ts_argmax(frame, 3).iloc[-1, 0], 1.0)
 
+    def test_correlation_maps_complete_zero_variance_window_to_zero(self):
+        left = pd.DataFrame({"a": [1.0, 1.0, 1.0, 2.0]})
+        right = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0]})
+
+        actual = correlation(left, right, 3)
+
+        self.assertTrue(actual.iloc[:2, 0].isna().all())
+        self.assertEqual(actual.iloc[2, 0], 0.0)
+        self.assertTrue(np.isfinite(actual.iloc[3, 0]))
+
 
 class Alpha101CalculatorTest(unittest.TestCase):
     @classmethod
@@ -106,6 +116,12 @@ class Alpha101CalculatorTest(unittest.TestCase):
                 self.assertEqual(result.shape, self.panels.close.shape)
                 self.assertEqual(result.index.tolist(), self.panels.close.index.tolist())
                 self.assertEqual(result.columns.tolist(), self.panels.close.columns.tolist())
+
+    def test_alpha_096_has_values_after_its_complete_warmup(self):
+        actual = self.calculator.calculate("alpha_096")
+
+        self.assertGreater(int(actual.notna().to_numpy().sum()), 0)
+        self.assertTrue(actual.iloc[:70].isna().all().all())
 
     def test_alpha_101_matches_formula(self):
         actual = self.calculator.calculate("alpha101")
@@ -260,6 +276,31 @@ class Alpha101RawAdapterTest(unittest.TestCase):
             panels.turnover_value["000001"].tolist(),
             (raw["000001"]["amount"] * 1000.0).tolist(),
         )
+
+    def test_raw_adapter_uses_qfq_reference_factor_after_the_last_bar(self):
+        dates = pd.to_datetime(["2026-07-13"])
+        volume = 1000.0
+        raw_vwap = 0.51 * 4.5057 / 4.064
+        raw = {
+            "000004": pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [0.50],
+                    "close": [0.51],
+                    "high": [0.52],
+                    "low": [0.49],
+                    "volume": [volume],
+                    "amount": [raw_vwap * volume / 10.0],
+                    "adj_factor": [4.064],
+                    "qfq_reference_adj_factor": [4.5057],
+                }
+            )
+        }
+
+        panels = build_alpha101_panels(raw)
+
+        self.assertAlmostEqual(panels.vwap.loc[dates[0], "000004"], 0.51)
+        Alpha101(panels).calculate("alpha_041")
 
     def test_static_metadata_is_not_backfilled_across_history(self):
         dates = pd.date_range("2025-01-01", periods=2, freq="B")

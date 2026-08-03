@@ -1,4 +1,8 @@
-﻿# RQuant
+﻿python -m rquant fetch-data --config config/fetch_kline.yaml
+
+python -m rquant fetch-data --config config/fetch_kline.yaml
+
+# RQuant
 
 RQuant 是一个面向 A 股的本地量化研究项目。它把行情数据、因子研究、机器学习标签/模型、自定义买点、组合回测和报告输出拆成清晰的顶层模块。
 
@@ -179,11 +183,29 @@ GEMINI_API_KEY=你的Gemini API Key
 
 不要把真实密钥写入代码、测试或文档。
 
-### 3. 抓取行情
+### 3. 抓取 Tushare 研究数据
 
 ```bash
 python -m rquant fetch-data --config config/fetch_kline.yaml
 ```
+
+`fetch-data` 默认执行 RQuant 实际消费的完整 A 股数据契约：
+
+- `bars`：逐股 qfq 日线，同时保存 `amount`、`adj_factor` 和
+  `qfq_reference_adj_factor`；
+- `daily_basic`：逐交易日历史市值、换手率、PB 等时点字段；
+- `benchmark`：沪深300 `index_daily`；
+- `industry`：申万 2021 三级分类及 `index_member_all` 完整纳入/剔除历史；
+  接口中不是六位 A 股代码的历史证券不进入因子上下文，但会记录在 manifest
+  的 `excluded_members` 中；
+- `trade_state`：逐交易日 `stk_limit` 涨跌停价和 `suspend_d` 停牌状态。
+  `stk_limit` 不是当日全部证券的全集；上市初期无涨跌停或历史市场口径造成的
+  合法缺失以 `has_price_limit=false` 和空上下限保留，不伪造涨跌停价；
+- `research_context`：按 `date,symbol` 合并上述时点数据，供因子研究直接使用。
+
+这里的“完整 2000 积分数据”严格限定为 RQuant 的 A 股因子研究和组合回测输入。
+Tushare 积分表中还有基金、期货、可转债、外汇、宏观和财务报表等大量同为
+2000 积分的接口，它们不是本项目的输入，不会被该命令无边界抓取。
 
 配置文件：
 
@@ -191,30 +213,50 @@ python -m rquant fetch-data --config config/fetch_kline.yaml
 config/fetch_kline.yaml
 ```
 
-输出目录：
+主要输出：
 
 ```text
 data/raw/
+data/context/daily_basic/
+data/context/benchmark_000300.csv
+data/context/sw_industry_membership.csv
+data/context/sw_industry_membership_classification.csv
+data/context/trade_state/
+data/context/research/
 ```
 
-抓取过程会在输出目录持续原子更新检查点：
+总清单持续记录每个数据集的状态和下游 manifest：
+
+```text
+data/context/_tushare_2000_manifest.json
+```
+
+行情子阶段仍在输出目录持续原子更新逐股检查点：
 
 ```text
 data/raw/_fetch_manifest.json
 ```
 
-manifest 保存区间、股票池签名、逐股 outcome、失败原因、重试次数以及待处理代码。
-任一股票三次重试后仍失败时，已完成 CSV 会保留，但 manifest 状态为 `partial`，
-`fetch-data` 返回非零退出码。修复外部服务后可仅重试失败/未完成代码：
+任一子数据集失败或不完整时，已完成 CSV 会保留，子 manifest 和总 manifest
+均为 `partial`，`fetch-data` 返回非零退出码。修复外部服务后可按签名恢复：
 
 ```bash
 python -m rquant fetch-data --config config/fetch_kline.yaml --resume
 ```
 
-只有日期区间、输出目录和股票池签名完全一致时才允许恢复，防止把另一批抓取结果混入。
+每个子数据集都校验自己的日期、输出、字段、股票池或行业版本签名，不一致时拒绝
+恢复，防止把另一批数据混入。如只需调试某个子集，可显式限定：
+
+```bash
+python -m rquant fetch-data --datasets industry trade_state --resume
+```
+
+少数 Tushare 历史接口沿用改码前的证券代码。只能在
+`tushare_2000.trade_state_symbol_aliases` 中以 `source/target/start/end` 明确声明
+有界区间映射；该映射进入恢复签名，不得使用无日期边界的全局替换。
 
 `config/fetch_kline.yaml` 默认保留 8 个工作线程，同时用
-`max_requests_per_minute: 180` 对所有 `ts.pro_bar` 请求做全局均匀节流，
+`max_requests_per_minute: 180` 对 Tushare 批量请求做均匀节流，
 为 Tushare 常见的 200 次/分钟限额留出余量。工作线程仍可覆盖，节流也可临时调整：
 
 ```bash
@@ -230,13 +272,20 @@ manifest 同时记录实际线程数和节流值，便于复现运行条件。
 date, open, close, high, low, volume
 ```
 
-Tushare 抓取结果还会保存 `amount` 和 `adj_factor`。`amount` 用于构造论文定义的
-日成交额及 `advN`；`adj_factor` 用于把 `amount / volume` 得到的未复权 VWAP 映射到
-OHLC 所在的 qfq 价格基准。旧行情文件若没有 `adj_factor`，重新执行同一区间的
-`fetch-data` 后才可运行依赖 VWAP 的 Alpha101/GTJA/custom 因子；已经显式保存同基准
-`vwap` / `avg` 的文件不受此限制。
+Tushare 抓取结果还会保存 `amount`、`adj_factor` 和
+`qfq_reference_adj_factor`。`amount` 用于构造论文定义的日成交额及 `advN`；
+VWAP 按 `amount * 1000 / (volume * 100) * adj_factor /
+qfq_reference_adj_factor` 映射到 OHLC 所在的 qfq 价格基准。参考因子必须使用
+Tushare 本次 qfq 查询实际采用的区间最新值，不能用 CSV 最后一根行情的因子代替；
+退市、停牌后发生因子变化时两者可能不同。schema-v2 旧文件只有在按旧分母重建的
+VWAP 每行都仍落在当日 `[low, high]` 内时才可恢复复用，否则 `--resume` 会只把异常
+股票重新加入抓取队列。已经显式保存同基准 `vwap` / `avg` 的文件不受此限制。
 
-历史市值分档使用独立的 Tushare `daily_basic` 时点上下文，不把今天的市值回填到历史：
+默认合并后的 `data/context/research` 把申万 L1/L2/L3 分别映射为
+`sector/industry/subindustry`，行业剔除日按区间右端不包含处理，避免把已剔除成分
+继续回填到当日。这是申万分类，并不是 Alpha101 论文原始美股行业体系。
+
+原有的 `fetch-context` 仍作为只抓 `daily_basic` 的兼容入口，不把今天的市值回填到历史：
 
 ```bash
 python -m rquant fetch-context --start 20180101 --end 20260710 --out data/context/daily_basic
@@ -259,11 +308,11 @@ python -m rquant fetch-context --start 20180101 --end 20260710 --out data/contex
 [Tushare 每日指标文档](https://tushare.pro/document/2?doc_id=32)为准。抓取完成后可直接：
 
 ```bash
-python -m rquant factor-batch --family gtja191 --context-file data/context/daily_basic --data data/raw --factors all --windows 1 5 10 20 --output factor_report/gtja191_batch/latest
+python -m rquant factor-batch --family gtja191 --context-file data/context/research --data data/raw --factors all --windows 1 5 10 20 --output factor_report/gtja191_batch/latest
 ```
 
-GTJA075、149、181、182 需要真实大盘指数开收盘序列，可单独抓取沪深300并直接作为
-`--benchmark-file`：
+GTJA075、149、181、182 需要真实大盘指数开收盘序列；`fetch-data` 默认已抓取沪深300。
+也可使用兼容入口单独抓取并作为 `--benchmark-file`：
 
 ```bash
 python -m rquant fetch-benchmark --index-code 000300.SH --start 20180101 --end 20260710 --out data/context/benchmark_000300.csv
@@ -289,7 +338,7 @@ SMB=`mean(SL,SM,SH)-mean(BL,BM,BH)`，HML=`mean(SH,BH)-mean(SL,BL)`。
 完整 GTJA191 批量输入因此为：
 
 ```bash
-python -m rquant factor-batch --family gtja191 --data data/raw --context-file data/context/daily_basic --benchmark-file data/context/benchmark_000300.csv --style-factor-file data/context/style_factors.csv --factors all --ignore-factor-config --windows 1 5 10 20 --output factor_report/gtja191_batch/latest
+python -m rquant factor-batch --family gtja191 --data data/raw --context-file data/context/research --benchmark-file data/context/benchmark_000300.csv --style-factor-file data/context/style_factors.csv --factors all --ignore-factor-config --windows 1 5 10 20 --output factor_report/gtja191_batch/latest
 ```
 
 ### 4. 系统自检
@@ -589,7 +638,7 @@ python -m rquant factor-test --factor custom_002 --data data/raw --metadata conf
 ```
 
 原始数据可以直接提供与 OHLC 同价格基准的 `vwap` / `avg`。Tushare qfq 数据则使用
-`amount`、`volume` 和 `adj_factor` 构造真实 VWAP；不会再用
+`amount`、`volume`、`adj_factor` 和 `qfq_reference_adj_factor` 构造真实 VWAP；不会再用
 `(high + low + close) / 3` 冒充。输入不足或计算值不在当日 `[low, high]` 范围时，
 依赖 VWAP 的因子明确报错（边界只保留微小的行情舍入容差）；部分交易日缺失也不会
 静默产出残缺结果。
@@ -605,7 +654,7 @@ python -m rquant factor-batch --list-factor-status
 按 `config/factors.yaml` 运行当前 `active` / `watch` 因子：
 
 ```bash
-python -m rquant factor-batch --family alpha101 --data data/raw --metadata config/stocklist.csv --output factor_report/alpha101_batch/latest --factor-config config/factors.yaml --factors all --windows 1 5 10 20 --groups 10 --top-counts 1 5 10 20 50 100 --start-date 2020-01-01 --end-date 2026-06-30 --min-listing-days 60 --liquidity-lookback-days 20 --commission-rate 0.0003 --slippage-rate 0.0005 --stamp-tax-rate 0.0005 --oos-start-date 2025-01-01
+python -m rquant factor-batch --family alpha101 --context-file data/context/research
 ```
 
 默认会复用实现签名和数据签名一致的已落盘结果；只有确认需要全部重算时才追加
@@ -631,6 +680,11 @@ Alpha101 的 `default_status` 是 `watch`：配置中未单独列出的公式也
 Alpha101 小数回看期严格按原论文向下取整，例如 `3.92795 -> 3`。论文中的布尔比较
 保留为 `0/1`，乘 `-1` 后为 `0/-1`；只有显式三元表达式才使用 `-1/+1`。所有滚动
 条件分支在完整预热窗口形成前保持缺失，不会把 NaN 条件误当成 else 分支信号。
+对已完整观测但任一输入零方差的滚动相关窗口，统一记为零相关；预热或输入缺失
+仍保留 NaN。任一因子若滞后后有效观测为零，会记为 `failed` 并继续后续因子，
+批次 manifest 记为 `partial`；无有效 IC 观测的旧报告不进入 leaderboard。
+日横截面和分组 IC 计算会先按组缩放有限因子值；相关系数不受该正比例缩放影响，
+但可避免 `alpha_084` 等大量级因子在平方、方差和标准差计算时溢出。
 
 ### GTJA191 批处理
 
@@ -870,7 +924,7 @@ Qlib LightGBM、Qlib DoubleEnsemble 和 Torch MLP。默认将特征和标签都�
 python -m rquant fit-multifactor --config config/ml.yaml
 ```
 
-默认 YAML 从 `config/factors.yaml` 导入 `watch` 因子，运行 Ridge 和 ElasticNet，
+默认 YAML 从 `config/gtja191_factors.yaml` 导入 `watch` 因子，运行 Ridge 和 ElasticNet，
 并执行样本外组合回测。需要其他模型时修改 `training.models`。命令行显式参数会覆盖
 对应 YAML 字段，例如只临时运行 Ridge 或强制重算：
 
@@ -985,7 +1039,7 @@ GTJA191 去重后的长多盈利因子可直接使用同一衔接文件；`--run
 `profitable_models.csv`：
 
 ```bash
-python -m rquant fit-multifactor --data data/raw --context-file data/context/daily_basic --factor-selection-file factor_report/gtja191_correlation/deduplicated_factors.csv --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --window-mode calendar-years --train-years 3 --test-years 1 --signal-top-n 10 --run-backtests --backtest-commission-wan 0.8 --start 2018-01-01 --end 2026-07-10 --output data/ml/gtja191_3y_1y
+python -m rquant fit-multifactor --data data/raw --context-file data/context/research --factor-selection-file factor_report/gtja191_correlation/deduplicated_factors.csv --models ridge elasticnet lightgbm doubleensemble mlp --target-window 20 --window-mode calendar-years --train-years 3 --test-years 1 --signal-top-n 10 --run-backtests --backtest-commission-wan 0.8 --start 2018-01-01 --end 2026-07-10 --output data/ml/gtja191_3y_1y
 ```
 
 这里的两套回测都只读取 `signal_type=buy`；零成本口径把佣金、印花税和过户费同时设为

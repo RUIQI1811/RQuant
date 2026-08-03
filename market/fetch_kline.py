@@ -111,6 +111,8 @@ logger = logging.getLogger("fetch_from_stocklist")
 # --------------------------- 限流/封禁处理配置 --------------------------- #
 COOLDOWN_SECS = 600
 DEFAULT_MAX_REQUESTS_PER_MINUTE = 180
+FETCH_SCHEMA_VERSION = 3
+QFQ_REFERENCE_ADJ_FACTOR_COLUMN = "qfq_reference_adj_factor"
 BAN_PATTERNS = (
     "访问频繁", "请稍后", "超过频率", "频繁访问",
     "too many requests", "429",
@@ -184,6 +186,31 @@ def set_api(session) -> None:
     """由外部(比如GUI)注入已创建好的 ts.pro_api() 会话"""
     global pro
     pro = session
+
+
+class _QfqReferenceCapturingApi:
+    """Delegate Tushare calls while retaining pro_bar's qfq denominator.
+
+    Tushare ``pro_bar(adj="qfq")`` divides prices by the first adjustment
+    factor returned for the requested interval.  That factor can be dated
+    after the final daily bar (for example, on a delisting date), so it cannot
+    be reconstructed from the factors left-joined onto daily rows.
+    """
+
+    def __init__(self, delegate) -> None:
+        self._delegate = delegate
+        self.qfq_reference_adj_factor: float | None = None
+
+    def adj_factor(self, *args, **kwargs):
+        frame = self._delegate.adj_factor(*args, **kwargs)
+        if frame is not None and not frame.empty and "adj_factor" in frame.columns:
+            reference = pd.to_numeric(frame["adj_factor"], errors="coerce").iloc[0]
+            if pd.notna(reference) and float(reference) > 0:
+                self.qfq_reference_adj_factor = float(reference)
+        return frame
+
+    def __getattr__(self, name: str):
+        return getattr(self._delegate, name)
     
 
 def _to_ts_code(code: str) -> str:
@@ -204,6 +231,7 @@ def _get_kline_tushare(
     rate_limiter: RequestRateLimiter | None = None,
 ) -> pd.DataFrame:
     ts_code = _to_ts_code(code)
+    capturing_api = _QfqReferenceCapturingApi(pro) if pro is not None else None
     if rate_limiter is not None:
         rate_limiter.wait()
     try:
@@ -222,7 +250,7 @@ def _get_kline_tushare(
                 start_date=start,
                 end_date=end,
                 freq="D",
-                api=pro,
+                api=capturing_api,
             )
     except Exception as e:
         if _looks_like_ip_ban(e):
@@ -232,11 +260,37 @@ def _get_kline_tushare(
     if df is None or df.empty:
         return pd.DataFrame()
 
+    missing_research_columns = {"amount", "adj_factor"}.difference(df.columns)
+    if missing_research_columns:
+        raise ValueError(
+            "Tushare pro_bar response is missing required research columns: "
+            + ", ".join(sorted(missing_research_columns))
+        )
+
+    captured_reference = (
+        capturing_api.qfq_reference_adj_factor
+        if capturing_api is not None
+        else None
+    )
+    if captured_reference is not None:
+        df[QFQ_REFERENCE_ADJ_FACTOR_COLUMN] = captured_reference
+    elif QFQ_REFERENCE_ADJ_FACTOR_COLUMN not in df.columns:
+        raise ValueError(
+            "Tushare pro_bar did not expose the qfq reference adjustment factor"
+        )
+
     df = df.rename(columns={"trade_date": "date", "vol": "volume"}).copy()
     base_cols = ["date", "open", "close", "high", "low", "volume"]
     optional_cols = [
         col
-        for col in ("pre_close", "change", "pct_chg", "amount", "adj_factor")
+        for col in (
+            "pre_close",
+            "change",
+            "pct_chg",
+            "amount",
+            "adj_factor",
+            QFQ_REFERENCE_ADJ_FACTOR_COLUMN,
+        )
         if col in df.columns
     ]
     df = df[base_cols + optional_cols].copy()
@@ -252,10 +306,16 @@ def _get_kline_tushare(
         "pct_chg",
         "amount",
         "adj_factor",
+        QFQ_REFERENCE_ADJ_FACTOR_COLUMN,
     ]:
         if c not in df.columns:
             continue
         df[c] = pd.to_numeric(df[c], errors="coerce")
+    if df["adj_factor"].isna().any() or df["adj_factor"].le(0).any():
+        raise ValueError("Tushare pro_bar returned invalid adj_factor values")
+    reference = df[QFQ_REFERENCE_ADJ_FACTOR_COLUMN]
+    if reference.isna().any() or reference.le(0).any() or reference.nunique() != 1:
+        raise ValueError("Tushare pro_bar returned an invalid qfq reference adjustment factor")
     return df.sort_values("date").reset_index(drop=True)
 
 def validate(df: pd.DataFrame) -> pd.DataFrame:
@@ -271,7 +331,14 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
 
 
 _BASE_KLINE_COLUMNS = ["date", "open", "close", "high", "low", "volume"]
-_OPTIONAL_KLINE_COLUMNS = ["pre_close", "change", "pct_chg", "amount", "adj_factor"]
+_OPTIONAL_KLINE_COLUMNS = [
+    "pre_close",
+    "change",
+    "pct_chg",
+    "amount",
+    "adj_factor",
+    QFQ_REFERENCE_ADJ_FACTOR_COLUMN,
+]
 
 
 def _empty_kline_frame() -> pd.DataFrame:
@@ -291,6 +358,78 @@ def _read_existing_kline(csv_path: Path) -> pd.DataFrame:
         if column != "date" and column in existing.columns:
             existing[column] = pd.to_numeric(existing[column], errors="coerce")
     return validate(existing)
+
+
+def _research_kline_ready(frame: pd.DataFrame) -> bool:
+    """Return whether a persisted frame can build same-basis qfq VWAP."""
+
+    if frame.empty:
+        return bool(
+            {"vwap", "avg"}.intersection(frame.columns)
+            or {"amount", "adj_factor"}.issubset(frame.columns)
+        )
+    required_prices = {"close", "low", "high"}
+    if not required_prices.issubset(frame.columns):
+        return False
+
+    explicit_vwap: pd.Series | None = None
+    for column in ("vwap", "avg"):
+        if column in frame.columns:
+            values = pd.to_numeric(frame[column], errors="coerce")
+            explicit_vwap = values if explicit_vwap is None else explicit_vwap.combine_first(values)
+
+    calculated_vwap: pd.Series | None = None
+    if {"amount", "adj_factor", "volume"}.issubset(frame.columns):
+        amount = pd.to_numeric(frame["amount"], errors="coerce")
+        volume = pd.to_numeric(frame["volume"], errors="coerce")
+        adj_factor = pd.to_numeric(frame["adj_factor"], errors="coerce")
+        if adj_factor.isna().any() or adj_factor.le(0).any():
+            return False
+
+        if QFQ_REFERENCE_ADJ_FACTOR_COLUMN in frame.columns:
+            reference = pd.to_numeric(
+                frame[QFQ_REFERENCE_ADJ_FACTOR_COLUMN], errors="coerce"
+            )
+            valid_references = reference.dropna()
+            if valid_references.empty or valid_references.le(0).any():
+                return False
+            if valid_references.nunique() != 1:
+                return False
+            reference = reference.fillna(float(valid_references.iloc[-1]))
+        else:
+            # Compatibility for schema-v2 files.  Only accept them when the
+            # reconstructed VWAP proves that the final bar factor really was
+            # the qfq denominator; delisted-symbol mismatches are rejected.
+            reference = pd.Series(float(adj_factor.dropna().iloc[-1]), index=frame.index)
+        calculated_vwap = amount * 1000.0 / (volume * 100.0)
+        calculated_vwap = calculated_vwap * adj_factor / reference
+
+    if explicit_vwap is None and calculated_vwap is None:
+        return False
+    vwap = (
+        calculated_vwap
+        if explicit_vwap is None
+        else explicit_vwap
+        if calculated_vwap is None
+        else explicit_vwap.combine_first(calculated_vwap)
+    )
+    low = pd.to_numeric(frame["low"], errors="coerce")
+    high = pd.to_numeric(frame["high"], errors="coerce")
+    close = pd.to_numeric(frame["close"], errors="coerce")
+    tolerance = pd.concat([low.abs(), high.abs()], axis=1).max(axis=1)
+    tolerance = tolerance.mul(1e-4).clip(lower=0.01)
+    compatible = vwap.ge(low - tolerance) & vwap.le(high + tolerance)
+    usable = vwap.where(compatible)
+    return not bool((close.notna() & usable.isna()).any())
+
+
+def _valid_research_kline_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        return _research_kline_ready(_read_existing_kline(path))
+    except (OSError, ValueError, KeyError, pd.errors.ParserError):
+        return False
 
 
 def _ordered_kline_columns(df: pd.DataFrame) -> list[str]:
@@ -391,6 +530,11 @@ def fetch_one(
             )
             if new_df.empty:
                 if not existing.empty:
+                    if not _research_kline_ready(existing):
+                        raise ValueError(
+                            "Tushare returned no rows and the existing CSV lacks "
+                            "amount/adj_factor required for qfq VWAP"
+                        )
                     return "no_new_data"
                 _write_kline_atomic(_empty_kline_frame(), csv_path)
                 return "empty"
@@ -425,6 +569,11 @@ def fetch_one(
                 outcome = "created"
 
             merged = validate(merged)
+            if not _research_kline_ready(merged):
+                raise ValueError(
+                    "merged market data lacks complete amount/adj_factor required "
+                    "for qfq VWAP"
+                )
             _write_kline_atomic(merged, csv_path)
             return outcome
         except Exception as e:
@@ -605,18 +754,39 @@ def _execute_fetch(
     resumed_count = 0
     if resume and resolved_manifest.is_file():
         previous = _load_fetch_manifest(resolved_manifest)
-        if previous.get("run_signature") != run_signature:
+        accepted_signatures = {run_signature}
+        if previous.get("schema_version") == 2:
+            accepted_signatures.add(
+                _legacy_v2_fetch_signature(
+                    start=resolved_start,
+                    end=resolved_end,
+                    output_dir=resolved_out,
+                    codes=codes,
+                )
+            )
+        if previous.get("run_signature") not in accepted_signatures:
             raise ValueError(
                 "cannot resume fetch: manifest signature does not match dates, output, or stock universe"
             )
         previous_completed = previous.get("completed", {})
         if not isinstance(previous_completed, dict):
             raise ValueError("cannot resume fetch: manifest completed field is invalid")
-        completed = {
+        candidate_completed = {
             code: str(outcome)
             for code, outcome in previous_completed.items()
             if code in codes
         }
+        completed = {
+            code: outcome
+            for code, outcome in candidate_completed.items()
+            if _valid_research_kline_file(resolved_out / f"{code}.csv")
+        }
+        invalidated_count = len(candidate_completed) - len(completed)
+        if invalidated_count:
+            logger.warning(
+                "恢复检查将 %d 个缺少同基准可用 VWAP 的旧结果重新加入抓取队列",
+                invalidated_count,
+            )
         resumed_count = len(completed)
 
     submitted_codes = [code for code in codes if code not in completed]
@@ -627,7 +797,7 @@ def _execute_fetch(
     def checkpoint(status: str) -> dict[str, object]:
         outcomes = _count_outcomes(completed)
         payload: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": FETCH_SCHEMA_VERSION,
             "status": status,
             "run_signature": run_signature,
             "started_at": started_at,
@@ -741,8 +911,39 @@ def _fetch_signature(
     codes: list[str],
 ) -> str:
     payload = {
-        "schema_version": 1,
-        "source": "tushare_daily_qfq",
+        "schema_version": FETCH_SCHEMA_VERSION,
+        "source": "tushare_daily_qfq_adjfactor",
+        "output_columns": [*_BASE_KLINE_COLUMNS, *_OPTIONAL_KLINE_COLUMNS],
+        "start": start,
+        "end": end,
+        "output_dir": str(output_dir.resolve()),
+        "codes": codes,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _legacy_v2_fetch_signature(
+    *,
+    start: str,
+    end: str,
+    output_dir: Path,
+    codes: list[str],
+) -> str:
+    """Reproduce schema-v2 signatures for one safe resume migration."""
+
+    payload = {
+        "schema_version": 2,
+        "source": "tushare_daily_qfq_adjfactor",
+        "output_columns": [
+            *_BASE_KLINE_COLUMNS,
+            "pre_close",
+            "change",
+            "pct_chg",
+            "amount",
+            "adj_factor",
+        ],
         "start": start,
         "end": end,
         "output_dir": str(output_dir.resolve()),

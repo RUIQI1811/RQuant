@@ -11,6 +11,10 @@
 default_status: watch
 default_direction: 1
 factors:
+  # Source formulas that remain unresolved must never enter normal batch/ML runs.
+  gtja_159: disabled
+  gtja_181: disabled
+
   # Price location, trend/reversal and volatility hypotheses.
   gtja_012: watch
   gtja_015: watch

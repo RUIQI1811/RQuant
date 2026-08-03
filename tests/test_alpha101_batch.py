@@ -361,6 +361,39 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
             profile = summary.loc[summary["metric"].eq("profile"), "value"].iloc[0]
             self.assertEqual(profile, "core")
 
+    def test_empty_factor_is_failed_without_blocking_later_factor(self):
+        panels = _sample_panels()
+        runner = Alpha101BatchRunner(
+            panels,
+            factors=("alpha_096", "alpha_101"),
+            output_dir="unused",
+            config=Alpha101BatchConfig(windows=(1,), groups=5),
+            data_signature="data-v1",
+            implementation_signature="code-v1",
+        )
+        original_calculate = runner.calculator.calculate
+
+        def calculate(name):
+            if name == "alpha_096":
+                return panels.close * np.nan
+            return original_calculate(name)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner.output_dir = Path(temp_dir)
+            with patch.object(runner.calculator, "calculate", side_effect=calculate):
+                result = runner.run()
+
+            statuses = result.status.set_index("factor")["status"].to_dict()
+            self.assertEqual(statuses, {"alpha_096": "failed", "alpha_101": "success"})
+            self.assertEqual(result.failed_factors, ("alpha_096",))
+            self.assertFalse((Path(temp_dir) / "alpha_096").exists())
+            self.assertTrue((Path(temp_dir) / "alpha_101" / "summary.csv").exists())
+            manifest = json.loads(
+                (Path(temp_dir) / "batch_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["status"], "partial")
+            self.assertEqual(manifest["failed_count"], 1)
+
     def test_full_profile_preserves_complete_report_set(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             Alpha101BatchRunner(
@@ -425,6 +458,57 @@ class Alpha101BatchRunnerTest(unittest.TestCase):
                 ("alpha_101",),
                 fingerprint="different-fingerprint",
             )
+            self.assertTrue(leaderboard.empty)
+
+    def test_leaderboard_treats_headerless_empty_optional_csv_as_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            factor_dir = Path(temp_dir) / "alpha_096"
+            factor_dir.mkdir()
+            pd.DataFrame(
+                [
+                    {
+                        "window": 1,
+                        "ic_mean": 0.01,
+                        "ic_std": 0.02,
+                        "icir": 0.5,
+                        "ic_win_rate": 0.6,
+                        "rank_ic_mean": 0.02,
+                        "rank_ic_std": 0.04,
+                        "rank_icir": 0.5,
+                        "rank_ic_win_rate": 0.6,
+                        "count": 10,
+                    }
+                ]
+            ).to_csv(factor_dir / "ic_summary.csv", index=False)
+            (factor_dir / "tradable_top_n.csv").write_text("\n", encoding="utf-8")
+
+            leaderboard = build_leaderboard(temp_dir, ("alpha_096",))
+
+            self.assertEqual(leaderboard["factor"].tolist(), ["alpha_096"])
+
+    def test_leaderboard_excludes_factor_without_valid_ic_observations(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            factor_dir = Path(temp_dir) / "alpha_096"
+            factor_dir.mkdir()
+            pd.DataFrame(
+                [
+                    {
+                        "window": 1,
+                        "ic_mean": np.nan,
+                        "ic_std": np.nan,
+                        "icir": np.nan,
+                        "ic_win_rate": np.nan,
+                        "rank_ic_mean": np.nan,
+                        "rank_ic_std": np.nan,
+                        "rank_icir": np.nan,
+                        "rank_ic_win_rate": np.nan,
+                        "count": 0,
+                    }
+                ]
+            ).to_csv(factor_dir / "ic_summary.csv", index=False)
+
+            leaderboard = build_leaderboard(temp_dir, ("alpha_096",))
+
             self.assertTrue(leaderboard.empty)
 
     def test_leaderboard_uses_ic_preferred_side_for_quality_score(self):

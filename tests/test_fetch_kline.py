@@ -17,6 +17,7 @@ from domain.market import FetchResult
 
 
 def _kline_frame(dates: list[str], closes: list[float]) -> pd.DataFrame:
+    volume = [1000.0] * len(dates)
     return pd.DataFrame(
         {
             "date": pd.to_datetime(dates),
@@ -24,7 +25,10 @@ def _kline_frame(dates: list[str], closes: list[float]) -> pd.DataFrame:
             "close": closes,
             "high": closes,
             "low": closes,
-            "volume": [1000.0] * len(dates),
+            "volume": volume,
+            "amount": [close * vol / 10.0 for close, vol in zip(closes, volume)],
+            "adj_factor": [1.0] * len(dates),
+            "qfq_reference_adj_factor": [1.0] * len(dates),
         }
     )
 
@@ -107,6 +111,7 @@ class FetchKlineRangeOverwriteTest(unittest.TestCase):
                 "vol": [1000.0],
                 "amount": [1005.0],
                 "adj_factor": [2.5],
+                "qfq_reference_adj_factor": [2.5],
             }
         )
         with patch.object(fetch_kline.ts, "pro_bar", return_value=provider) as api:
@@ -117,7 +122,84 @@ class FetchKlineRangeOverwriteTest(unittest.TestCase):
             )
 
         self.assertEqual(result["adj_factor"].tolist(), [2.5])
+        self.assertEqual(result["qfq_reference_adj_factor"].tolist(), [2.5])
         self.assertTrue(api.call_args.kwargs["adjfactor"])
+
+    def test_get_kline_captures_reference_factor_after_the_last_daily_bar(self):
+        provider = pd.DataFrame(
+            {
+                "trade_date": ["20260713"],
+                "open": [0.50],
+                "close": [0.51],
+                "high": [0.52],
+                "low": [0.49],
+                "vol": [1000.0],
+                "amount": [56.54],
+                "adj_factor": [4.064],
+            }
+        )
+        delegate = Mock()
+        delegate.adj_factor.return_value = pd.DataFrame(
+            {
+                "trade_date": ["20260714", "20260713"],
+                "adj_factor": [4.5057, 4.064],
+            }
+        )
+
+        def fake_pro_bar(**kwargs):
+            kwargs["api"].adj_factor(
+                ts_code=kwargs["ts_code"],
+                start_date=kwargs["start_date"],
+                end_date=kwargs["end_date"],
+            )
+            return provider
+
+        with (
+            patch.object(fetch_kline, "pro", delegate),
+            patch.object(fetch_kline.ts, "pro_bar", side_effect=fake_pro_bar),
+        ):
+            result = fetch_kline._get_kline_tushare(
+                "000004", "20100101", "20260801"
+            )
+
+        self.assertEqual(result["qfq_reference_adj_factor"].tolist(), [4.5057])
+
+    def test_get_kline_rejects_a_nonempty_response_without_adjustment_factor(self):
+        provider = pd.DataFrame(
+            {
+                "trade_date": ["20260102"],
+                "open": [10.0],
+                "close": [10.1],
+                "high": [10.2],
+                "low": [9.9],
+                "vol": [1000.0],
+                "amount": [1005.0],
+                "qfq_reference_adj_factor": [2.5],
+            }
+        )
+        with patch.object(fetch_kline.ts, "pro_bar", return_value=provider):
+            with self.assertRaisesRegex(ValueError, "adj_factor"):
+                fetch_kline._get_kline_tushare(
+                    "000001", "20260102", "20260102"
+                )
+
+    def test_research_readiness_rejects_a_legacy_delisting_factor_mismatch(self):
+        frame = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-07-13"]),
+                "open": [0.50],
+                "close": [0.51],
+                "high": [0.52],
+                "low": [0.49],
+                "volume": [1000.0],
+                "amount": [56.54],
+                "adj_factor": [4.064],
+            }
+        )
+
+        self.assertFalse(fetch_kline._research_kline_ready(frame))
+        frame["qfq_reference_adj_factor"] = 4.5057
+        self.assertTrue(fetch_kline._research_kline_ready(frame))
 
     def test_get_kline_suppresses_known_tushare_fillna_future_warning(self):
         def provider_warning(**_kwargs):
@@ -262,6 +344,27 @@ class FetchKlineRangeOverwriteTest(unittest.TestCase):
             self.assertEqual(outcome, "no_new_data")
             self.assertEqual(csv_path.read_bytes(), original)
 
+    def test_empty_provider_response_rejects_legacy_file_without_adj_factor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir)
+            legacy = _kline_frame(["2026-01-01"], [10.0]).drop(
+                columns="adj_factor"
+            )
+            legacy.to_csv(output / "000001.csv", index=False)
+
+            with (
+                patch.object(
+                    fetch_kline, "_get_kline_tushare", return_value=pd.DataFrame()
+                ),
+                patch.object(fetch_kline.time, "sleep"),
+            ):
+                with self.assertRaisesRegex(
+                    fetch_kline.FetchExhaustedError, "lacks amount/adj_factor"
+                ):
+                    fetch_kline.fetch_one(
+                        "000001", "20260101", "20260102", output
+                    )
+
     def test_changed_qfq_overlap_triggers_full_refresh(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             output = Path(temp_dir)
@@ -367,6 +470,11 @@ class FetchKlineRangeOverwriteTest(unittest.TestCase):
             self.assertEqual(first["failed_codes"], ["000002"])
             self.assertEqual(first_manifest["failures"]["000002"]["attempts"], 3)
             self.assertEqual(first_manifest["completed"], {"000001": "created"})
+
+            output_dir.mkdir(parents=True, exist_ok=True)
+            _kline_frame(["2026-01-02"], [10.0]).to_csv(
+                output_dir / "000001.csv", index=False
+            )
 
             with (
                 patch.dict(os.environ, {"TUSHARE_TOKEN": "test-token"}),

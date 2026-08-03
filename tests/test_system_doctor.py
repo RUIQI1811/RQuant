@@ -46,8 +46,9 @@ class SystemDoctorTest(unittest.TestCase):
             encoding="utf-8",
         )
         (root / "data/raw/000001.csv").write_text(
-            "date,open,close,high,low,volume\n"
-            f"{date.today().isoformat()},1,1,1,1,100\n",
+            "date,open,close,high,low,volume,amount,adj_factor,"
+            "qfq_reference_adj_factor\n"
+            f"{date.today().isoformat()},1,1,1,1,100,10,1,1\n",
             encoding="utf-8",
         )
 
@@ -219,6 +220,27 @@ class SystemDoctorTest(unittest.TestCase):
                 "not-a-symbol.csv",
             )
 
+    def test_market_data_vwap_readiness_checks_qfq_price_basis(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "000004.csv"
+            path.write_text(
+                "date,open,close,high,low,volume,amount,adj_factor\n"
+                "2026-07-13,0.50,0.51,0.52,0.49,1000,56.54,4.064\n",
+                encoding="utf-8",
+            )
+
+            legacy = system_doctor._inspect_market_csv(path)
+            self.assertFalse(legacy["vwap_ready"])
+
+            path.write_text(
+                "date,open,close,high,low,volume,amount,adj_factor,"
+                "qfq_reference_adj_factor\n"
+                "2026-07-13,0.50,0.51,0.52,0.49,1000,56.54,4.064,4.5057\n",
+                encoding="utf-8",
+            )
+            repaired = system_doctor._inspect_market_csv(path)
+            self.assertTrue(repaired["vwap_ready"])
+
     def test_installed_native_dependency_must_actually_import(self):
         with (
             patch.object(system_doctor.importlib.metadata, "version", return_value="4.6.0"),
@@ -318,7 +340,9 @@ class SystemDoctorTest(unittest.TestCase):
             root = Path(temp_dir)
             self._build_project(root)
             (root / "data/raw/000001.csv").write_text(
-                "date,open,close,high,low,volume\n2026-07-01,1,1,1,1,100\n",
+                "date,open,close,high,low,volume,amount,adj_factor,"
+                "qfq_reference_adj_factor\n"
+                "2026-07-01,1,1,1,1,100,10,1,1\n",
                 encoding="utf-8",
             )
             with (

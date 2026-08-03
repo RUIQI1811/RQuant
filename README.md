@@ -1,7 +1,4 @@
-﻿python -m rquant fetch-data --config config/fetch_kline.yaml
-
-python -m rquant fetch-data --config config/fetch_kline.yaml
-
+﻿
 # RQuant
 
 RQuant 是一个面向 A 股的本地量化研究项目。它把行情数据、因子研究、机器学习标签/模型、自定义买点、组合回测和报告输出拆成清晰的顶层模块。
@@ -274,8 +271,7 @@ date, open, close, high, low, volume
 
 Tushare 抓取结果还会保存 `amount`、`adj_factor` 和
 `qfq_reference_adj_factor`。`amount` 用于构造论文定义的日成交额及 `advN`；
-VWAP 按 `amount * 1000 / (volume * 100) * adj_factor /
-qfq_reference_adj_factor` 映射到 OHLC 所在的 qfq 价格基准。参考因子必须使用
+VWAP 按 `amount * 1000 / (volume * 100) * adj_factor / qfq_reference_adj_factor` 映射到 OHLC 所在的 qfq 价格基准。参考因子必须使用
 Tushare 本次 qfq 查询实际采用的区间最新值，不能用 CSV 最后一根行情的因子代替；
 退市、停牌后发生因子变化时两者可能不同。schema-v2 旧文件只有在按旧分母重建的
 VWAP 每行都仍落在当日 `[low, high]` 内时才可恢复复用，否则 `--resume` 会只把异常
